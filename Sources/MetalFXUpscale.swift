@@ -35,7 +35,7 @@ import MetalFX
         let instruction = try await Compositor.Instruction(timeRange: videoTrack.load(.timeRange))
         videoComposition.instructions = [instruction]
 
-        let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHEVCHighestQualityWithAlpha)!
+        let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHEVC7680x4320)!
         exportSession.videoComposition = videoComposition
         let naturalSize = try await videoTrack.load(.naturalSize)
         (exportSession.customVideoCompositor as! Compositor).inputWidth = Int(naturalSize.width)
