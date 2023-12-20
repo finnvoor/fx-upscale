@@ -26,8 +26,8 @@ import SwiftTUI
             throw ValidationError("File already exists at \(outputURL.path(percentEncoded: false))")
         }
 
-        guard width <= 16384, height <= 16384 else {
-            throw ValidationError("Maximum supported width/height: 16384")
+        guard width <= 7680, height <= 7680 else {
+            throw ValidationError("Maximum supported width/height: 7680")
         }
 
         let asset = AVAsset(url: url)
