@@ -1,4 +1,8 @@
-# POC MetalFX Video Upscaler
+# ↕️ fx-upscale
+Metal-powered spatial video upscaling
+
+![demo](https://github.com/Finnvoor/fx-upscale/assets/8284016/b3613348-a553-43b6-a607-fd35f33d99d6)
+
 
 ## Usage
 ```
@@ -6,4 +10,15 @@ USAGE: metal-fx-upscale <source-file> --width <destination-width> --height <dest
 ```
 
 ## Installation
+### Homebrew
+```bash
+brew install finnvoor/tools/fx-upscale
+```
+
+### Mint
+```bash
+mint install finnvoor/fx-upscale
+```
+
+### Manual
 Download the latest release from [releases](https://github.com/Finnvoor/MetalFXUpscale/releases).
