@@ -1,0 +1,21 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+jobs:
+  release:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v3
+      - run: sudo xcode-select -s /Applications/Xcode_15.0.app
+      - name: Build
+        run: swift build -c release --arch arm64 --arch x86_64 --product xcc
+      - name: Compress
+        run: tar -czf ${{ github.ref_name }}.tar.gz -C .build/apple/Products/Release xcc
+      - name: Release
+        run: gh release create ${{ github.ref_name }} ${{ github.ref_name }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
