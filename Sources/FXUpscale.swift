@@ -79,7 +79,9 @@ import SwiftTUI
             "to \(Int(outputSize.width))x\(Int(outputSize.height)) ",
             "(~\(estimatedFileLength))".faint
         ].joined())
+        ActivityIndicator.start()
         await exportSession.export()
+        ActivityIndicator.stop()
         if let error = exportSession.error { throw error }
         CommandLine.success("Video successfully upscaled!")
     }
