@@ -8,6 +8,9 @@ Metal-powered video upscaling
 ```
 USAGE: fx-upscale <url> [--width <width>] [--height <height>]
 ```
+- If width and height are specified, they will be used for the output dimensions
+- If only 1 of width or height is specified, the other will be inferred proportionally
+- If neither width nor height is specified, the video will be upscaled by 2x
 
 ## Installation
 ### Homebrew
