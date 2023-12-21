@@ -1,12 +1,12 @@
 # ↕️ fx-upscale
-Metal-powered spatial video upscaling
+Metal-powered video upscaling
 
 ![demo](https://github.com/Finnvoor/fx-upscale/assets/8284016/b3613348-a553-43b6-a607-fd35f33d99d6)
 
 
 ## Usage
 ```
-USAGE: metal-fx-upscale <source-file> --width <destination-width> --height <destination-height>
+USAGE: fx-upscale <source-file> --width <destination-width> --height <destination-height>
 ```
 
 ## Installation
