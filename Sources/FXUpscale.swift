@@ -9,8 +9,8 @@ import SwiftTUI
 @main struct FXUpscale: AsyncParsableCommand {
     @Argument(help: "The video file to upscale", transform: URL.init(fileURLWithPath:)) var url: URL
 
-    @Option(help: "The output file width") var width: Int
-    @Option(help: "The output file height") var height: Int
+    @Option(help: "The output file width") var width: Int?
+    @Option(help: "The output file height") var height: Int?
 
     mutating func run() async throws {
         guard FileManager.default.fileExists(atPath: url.path) else {
@@ -26,16 +26,27 @@ import SwiftTUI
             throw ValidationError("File already exists at \(outputURL.path(percentEncoded: false))")
         }
 
-        guard width <= 7680, height <= 7680 else {
-            throw ValidationError("Maximum supported width/height: 7680")
-        }
-
         let asset = AVAsset(url: url)
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
             throw ValidationError("Failed to get video track from input file")
         }
 
         let inputSize = try await videoTrack.load(.naturalSize)
+
+        // 1. Use passed in width/height
+        // 2. Use proportional width/height if only one is specified
+        // 3. Default to 2x upscale
+
+        let width = width ??
+            height.map { Int(inputSize.width * (CGFloat($0) / inputSize.height)) } ??
+            Int(inputSize.width) * 2
+        let height = height ??
+            Int(inputSize.height * (CGFloat(width) / inputSize.width))
+
+        guard width <= 7680, height <= 7680 else {
+            throw ValidationError("Maximum supported width/height: 7680")
+        }
+
         let outputSize = CGSize(width: width, height: height)
 
         let videoComposition = AVMutableVideoComposition()

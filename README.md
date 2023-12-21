@@ -6,7 +6,7 @@ Metal-powered video upscaling
 
 ## Usage
 ```
-USAGE: fx-upscale <source-file> --width <destination-width> --height <destination-height>
+USAGE: fx-upscale <url> [--width <width>] [--height <height>]
 ```
 
 ## Installation
