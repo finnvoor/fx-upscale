@@ -1,8 +1,8 @@
 import ArgumentParser
 import AVFoundation
 import Foundation
-import MetalFX
 import SwiftTUI
+import Upscaling
 
 // MARK: - MetalFXUpscale
 
@@ -43,46 +43,38 @@ import SwiftTUI
         let height = height ??
             Int(inputSize.height * (CGFloat(width) / inputSize.width))
 
-        guard width <= 7680, height <= 7680 else {
-            throw ValidationError("Maximum supported width/height: 7680")
+        guard width <= UpscalingExportSession.maxSize,
+              height <= UpscalingExportSession.maxSize else {
+            throw ValidationError("Maximum supported width/height: 16384")
         }
 
         let outputSize = CGSize(width: width, height: height)
 
-        let videoComposition = AVMutableVideoComposition()
-        videoComposition.customVideoCompositorClass = UpscalingCompositor.self
-        videoComposition.renderSize = CGSize(width: width, height: height)
-        videoComposition.frameDuration = try await videoTrack.load(.minFrameDuration)
-        let timeRange = try await CMTimeRange(start: .zero, duration: asset.load(.duration))
-        let instruction = UpscalingCompositor.Instruction(timeRange: timeRange)
-        videoComposition.instructions = [instruction]
+        let outputFileType: AVFileType = {
+            switch url.pathExtension.lowercased() {
+            case "mov": return .mov
+            case "m4v": return .m4v
+            case "mp4": return .mp4
+            default:
+                CommandLine.warn("Unsupported file type \"\(url.pathExtension)\", defaulting to mp4")
+                return .mp4
+            }
+        }()
 
-        let exportSession = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetHEVC7680x4320)!
-        exportSession.videoComposition = videoComposition
-        (exportSession.customVideoCompositor as! UpscalingCompositor).inputSize = inputSize
-        (exportSession.customVideoCompositor as! UpscalingCompositor).outputSize = outputSize
-        exportSession.outputURL = outputURL
+        let exportSession = UpscalingExportSession(
+            asset: asset,
+            outputURL: outputURL,
+            outputFileType: outputFileType,
+            outputSize: outputSize
+        )
 
-        switch url.pathExtension.lowercased() {
-        case "mov": exportSession.outputFileType = .mov
-        case "m4v": exportSession.outputFileType = .m4v
-        case "mp4": exportSession.outputFileType = .mp4
-        default:
-            CommandLine.warn("Unsupported file type \"\(url.pathExtension)\", defaulting to mp4")
-            exportSession.outputFileType = .mp4
-        }
-
-        let estimatedFileLength = try await ByteCountFormatter()
-            .string(fromByteCount: exportSession.estimatedOutputFileLengthInBytes)
         CommandLine.info([
             "Upscaling from \(Int(inputSize.width))x\(Int(inputSize.height)) ",
-            "to \(Int(outputSize.width))x\(Int(outputSize.height)) ",
-            "(~\(estimatedFileLength))".faint
+            "to \(Int(outputSize.width))x\(Int(outputSize.height)) "
         ].joined())
         ActivityIndicator.start()
-        await exportSession.export()
+        try await exportSession.export()
         ActivityIndicator.stop()
-        if let error = exportSession.error { throw error }
         CommandLine.success("Video successfully upscaled!")
     }
 }

@@ -1,44 +1,33 @@
 import AVFoundation
+#if canImport(MetalFX)
 import MetalFX
+#endif
 
-class UpscalingCompositor: NSObject, AVVideoCompositing {
-    // MARK: Internal
+// MARK: - UpscalingCompositor
 
-    final class Instruction: NSObject, AVVideoCompositionInstructionProtocol {
-        // MARK: Lifecycle
+public final class UpscalingCompositor: NSObject, AVVideoCompositing {
+    // MARK: Public
 
-        init(timeRange: CMTimeRange) {
-            self.timeRange = timeRange
-        }
-
-        // MARK: Internal
-
-        var timeRange: CMTimeRange
-        let enablePostProcessing = true
-        let containsTweening = false
-        var requiredSourceTrackIDs: [NSValue]? = nil
-        let passthroughTrackID = kCMPersistentTrackID_Invalid
-    }
-
-    let sourcePixelBufferAttributes: [String: Any]? = [
+    public let sourcePixelBufferAttributes: [String: Any]? = [
         kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_32BGRA],
         kCVPixelBufferIOSurfacePropertiesKey as String: [CFString: Any]()
     ]
 
-    var requiredPixelBufferAttributesForRenderContext: [String: Any] = [
+    public var requiredPixelBufferAttributesForRenderContext: [String: Any] = [
         kCVPixelBufferPixelFormatTypeKey as String: [kCVPixelFormatType_32BGRA],
         kCVPixelBufferIOSurfacePropertiesKey as String: [CFString: Any]()
     ]
 
-    var inputSize = CGSize.zero
-    var outputSize = CGSize.zero
+    public var inputSize = CGSize.zero
+    public var outputSize = CGSize.zero
 
-    func renderContextChanged(_: AVVideoCompositionRenderContext) {}
+    public func renderContextChanged(_: AVVideoCompositionRenderContext) {}
 
-    func startRequest(_ asyncVideoCompositionRequest: AVAsynchronousVideoCompositionRequest) {
+    public func startRequest(_ asyncVideoCompositionRequest: AVAsynchronousVideoCompositionRequest) {
         let sourceFrame = asyncVideoCompositionRequest.sourceFrame(
             byTrackID: CMPersistentTrackID(truncating: asyncVideoCompositionRequest.sourceTrackIDs[0])
         )!
+        #if canImport(MetalFX)
         let destinationFrame = asyncVideoCompositionRequest.renderContext.newPixelBuffer()!
 
         let commandBuffer = commandQueue.makeCommandBuffer()!
@@ -82,6 +71,9 @@ class UpscalingCompositor: NSObject, AVVideoCompositing {
         commandBuffer.waitUntilCompleted()
 
         asyncVideoCompositionRequest.finish(withComposedVideoFrame: destinationFrame)
+        #else
+        asyncVideoCompositionRequest.finish(withComposedVideoFrame: sourceFrame)
+        #endif
     }
 
     // MARK: Private
@@ -94,6 +86,7 @@ class UpscalingCompositor: NSObject, AVVideoCompositing {
         return cvTextureCache
     }()
 
+    #if canImport(MetalFX)
     private lazy var spatialScaler: MTLFXSpatialScaler = {
         let spatialScalerDescriptor = MTLFXSpatialScalerDescriptor()
         spatialScalerDescriptor.inputWidth = Int(inputSize.width)
@@ -105,6 +98,7 @@ class UpscalingCompositor: NSObject, AVVideoCompositing {
         spatialScalerDescriptor.colorProcessingMode = .perceptual
         return spatialScalerDescriptor.makeSpatialScaler(device: device)!
     }()
+    #endif
 
     private lazy var intermediateOutputTextureDescriptor: MTLTextureDescriptor = {
         let textureDescriptor = MTLTextureDescriptor()
