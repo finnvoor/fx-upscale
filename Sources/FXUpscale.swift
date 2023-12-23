@@ -9,8 +9,8 @@ import SwiftTUI
 @main struct FXUpscale: AsyncParsableCommand {
     @Argument(help: "The video file to upscale", transform: URL.init(fileURLWithPath:)) var url: URL
 
-    @Option(help: "The output file width") var width: Int?
-    @Option(help: "The output file height") var height: Int?
+    @Option(name: .shortAndLong, help: "The output file width") var width: Int?
+    @Option(name: .shortAndLong, help: "The output file height") var height: Int?
 
     mutating func run() async throws {
         guard FileManager.default.fileExists(atPath: url.path) else {

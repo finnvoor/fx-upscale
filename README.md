@@ -7,6 +7,14 @@ Metal-powered video upscaling
 ## Usage
 ```
 USAGE: fx-upscale <url> [--width <width>] [--height <height>]
+
+ARGUMENTS:
+  <url>                   The video file to upscale
+
+OPTIONS:
+  -w, --width <width>     The output file width
+  -h, --height <height>   The output file height
+  -h, --help              Show help information.
 ```
 - If width and height are specified, they will be used for the output dimensions
 - If only 1 of width or height is specified, the other will be inferred proportionally
