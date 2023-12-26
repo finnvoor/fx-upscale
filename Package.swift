@@ -4,9 +4,10 @@ import PackageDescription
 
 let package = Package(
     name: "fx-upscale",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
         .executable(name: "fx-upscale", targets: ["fx-upscale"]),
+        .library(name: "Upscaling", targets: ["Upscaling"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.2.0"),
@@ -17,8 +18,10 @@ let package = Package(
             name: "fx-upscale",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
-                .product(name: "SwiftTUI", package: "SwiftTUI")
+                .product(name: "SwiftTUI", package: "SwiftTUI"),
+                "Upscaling"
             ]
         ),
+        .target(name: "Upscaling")
     ]
 )
