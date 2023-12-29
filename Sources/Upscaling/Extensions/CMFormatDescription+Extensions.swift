@@ -19,7 +19,7 @@ extension CMFormatDescription {
     var colorPrimaries: String? {
         switch extensions[
             kCMFormatDescriptionExtension_ColorPrimaries
-        ] as! CFString {
+        ].map({ $0 as! CFString }) {
         case kCMFormatDescriptionColorPrimaries_ITU_R_709_2: AVVideoColorPrimaries_ITU_R_709_2
         #if os(macOS)
         case kCMFormatDescriptionColorPrimaries_EBU_3213: AVVideoColorPrimaries_EBU_3213
@@ -34,7 +34,7 @@ extension CMFormatDescription {
     var colorTransferFunction: String? {
         switch extensions[
             kCMFormatDescriptionExtension_TransferFunction
-        ] as! CFString {
+        ].map({ $0 as! CFString }) {
         case kCMFormatDescriptionTransferFunction_ITU_R_709_2: AVVideoTransferFunction_ITU_R_709_2
         #if os(macOS)
         case kCMFormatDescriptionTransferFunction_SMPTE_240M_1995: AVVideoTransferFunction_SMPTE_240M_1995
@@ -49,7 +49,7 @@ extension CMFormatDescription {
     var colorYCbCrMatrix: String? {
         switch extensions[
             kCMFormatDescriptionExtension_YCbCrMatrix
-        ] as! CFString {
+        ].map({ $0 as! CFString }) {
         case kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2: AVVideoYCbCrMatrix_ITU_R_709_2
         case kCMFormatDescriptionYCbCrMatrix_ITU_R_601_4: AVVideoYCbCrMatrix_ITU_R_601_4
         #if os(macOS)
