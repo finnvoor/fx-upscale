@@ -37,11 +37,11 @@ public class UpscalingExportSession {
         let assetDuration = try await asset.load(.duration)
 
         for track in try await asset.load(.tracks) {
+            let formatDescription = try await track.load(.formatDescriptions).first
             switch track.mediaType {
             case .video:
                 let naturalSize = try await track.load(.naturalSize)
                 let nominalFrameRate = try await track.load(.nominalFrameRate)
-                let formatDescription = try await track.load(.formatDescriptions).first
 
                 let videoOutput = AVAssetReaderVideoCompositionOutput(
                     videoTracks: [track],
@@ -97,7 +97,11 @@ public class UpscalingExportSession {
                     throw Error.couldNotAddAssetReaderAudioOutput
                 }
 
-                let audioInput = AVAssetWriterInput(mediaType: .audio, outputSettings: nil)
+                let audioInput = AVAssetWriterInput(
+                    mediaType: .audio,
+                    outputSettings: nil,
+                    sourceFormatHint: formatDescription
+                )
                 audioInput.expectsMediaDataInRealTime = false
                 if assetWriter.canAdd(audioInput) {
                     assetWriter.add(audioInput)
