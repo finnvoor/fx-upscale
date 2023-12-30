@@ -20,6 +20,9 @@ OPTIONS:
 - If only 1 of width or height is specified, the other will be inferred proportionally
 - If neither width nor height is specified, the video will be upscaled by 2x
 
+> [!NOTE]
+> When upscaling videos to >4k, `.mp4` files will be converted to `.mov` and `h264` or `hevc` codecs will be re-encoded as `proRes422`.  This is due to the fact that macOS struggles to play back >4k video `h264` and `hevc` files, and `h264` and `hevc` codecs only support up to ~8k.  If you have a use case for creating >4k `h264`/`hevc` `.mp4`'s, please open an issue.
+
 ## Installation
 ### Homebrew
 ```bash
