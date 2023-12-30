@@ -8,12 +8,10 @@ public class UpscalingExportSession {
     public init(
         asset: AVAsset,
         outputURL: URL,
-        outputFileType: AVFileType,
         outputSize: CGSize
     ) {
         self.asset = asset
         self.outputURL = outputURL
-        self.outputFileType = outputFileType
         self.outputSize = outputSize
     }
 
@@ -22,17 +20,33 @@ public class UpscalingExportSession {
     public static let maxSize = 16384
 
     public let asset: AVAsset
-    public let outputURL: URL
-    public let outputFileType: AVFileType
+    public private(set) var outputURL: URL
     public let outputSize: CGSize
 
     public func export() async throws {
         guard !FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false)) else {
             throw Error.outputURLAlreadyExists
         }
-        let assetReader = try AVAssetReader(asset: asset)
+
+        if outputURL.pathExtension.lowercased() != "mov",
+           (outputSize.width * outputSize.height) > Self.maxNonProResPixelCount {
+            outputURL = outputURL
+                .deletingPathExtension()
+                .appendingPathExtension("mov")
+        }
+
+        let outputFileType: AVFileType = {
+            switch outputURL.pathExtension.lowercased() {
+            case "mov": return .mov
+            case "m4v": return .m4v
+            default: return .mp4
+            }
+        }()
+
         let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: outputFileType)
         assetWriter.metadata = try await asset.load(.metadata)
+
+        let assetReader = try AVAssetReader(asset: asset)
 
         let assetDuration = try await asset.load(.duration)
 
@@ -82,7 +96,12 @@ public class UpscalingExportSession {
                     throw Error.couldNotAddAssetReaderVideoOutput
                 }
 
-                let videoCodec = formatDescription?.videoCodecType ?? .hevc
+                var videoCodec = formatDescription?.videoCodecType ?? .hevc
+                if !videoCodec.isProRes,
+                   (outputSize.width * outputSize.height) > Self.maxNonProResPixelCount {
+                    videoCodec = .proRes422
+                }
+
                 let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
                     AVVideoWidthKey: outputSize.width,
                     AVVideoHeightKey: outputSize.height,
@@ -188,6 +207,10 @@ public class UpscalingExportSession {
             }
         } as Void
     }
+
+    // MARK: Private
+
+    private static let maxNonProResPixelCount: CGFloat = 3840 * 2160
 }
 
 // MARK: UpscalingExportSession.Error

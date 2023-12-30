@@ -13,18 +13,15 @@ import Upscaling
     @Option(name: .shortAndLong, help: "The output file height") var height: Int?
 
     mutating func run() async throws {
+        guard ["mov", "m4v", "mp4"].contains(url.pathExtension.lowercased()) else {
+            throw ValidationError("Unsupported file type. Supported types: mov, m4v, mp4")
+        }
+
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw ValidationError("File does not exist at \(url.path(percentEncoded: false))")
         }
-        let pathExtension = url.pathExtension
-        let outputURL = URL(filePath: url
-            .deletingPathExtension()
-            .path(percentEncoded: false)
-            .appending("_upscaled"))
-            .appendingPathExtension(pathExtension)
-        guard !FileManager.default.fileExists(atPath: outputURL.path) else {
-            throw ValidationError("File already exists at \(outputURL.path(percentEncoded: false))")
-        }
+
+        let outputURL = url.renamed { "\($0) Upscaled" }
 
         let asset = AVAsset(url: url)
         guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
@@ -50,21 +47,9 @@ import Upscaling
 
         let outputSize = CGSize(width: width, height: height)
 
-        let outputFileType: AVFileType = {
-            switch url.pathExtension.lowercased() {
-            case "mov": return .mov
-            case "m4v": return .m4v
-            case "mp4": return .mp4
-            default:
-                CommandLine.warn("Unsupported file type \"\(url.pathExtension)\", defaulting to mp4")
-                return .mp4
-            }
-        }()
-
         let exportSession = UpscalingExportSession(
             asset: asset,
             outputURL: outputURL,
-            outputFileType: outputFileType,
             outputSize: outputSize
         )
 

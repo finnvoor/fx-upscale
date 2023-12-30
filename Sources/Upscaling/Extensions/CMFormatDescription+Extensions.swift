@@ -1,7 +1,7 @@
 import AVFoundation
 
 extension CMFormatDescription {
-    var videoCodecType: AVVideoCodecType? {
+    public var videoCodecType: AVVideoCodecType? {
         switch mediaSubType {
         case .hevc: return .hevc
         case .h264: return .h264
