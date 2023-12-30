@@ -86,7 +86,12 @@ public class UpscalingExportSession {
                 let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
                     AVVideoWidthKey: outputSize.width,
                     AVVideoHeightKey: outputSize.height,
-                    AVVideoCodecKey: videoCodec
+                    AVVideoCodecKey: videoCodec,
+                    AVVideoColorPropertiesKey: [
+                        AVVideoColorPrimariesKey: formatDescription?.colorPrimaries,
+                        AVVideoTransferFunctionKey: formatDescription?.colorTransferFunction,
+                        AVVideoYCbCrMatrixKey: formatDescription?.colorYCbCrMatrix
+                    ]
                 ])
                 videoInput.expectsMediaDataInRealTime = false
                 if assetWriter.canAdd(videoInput) {
