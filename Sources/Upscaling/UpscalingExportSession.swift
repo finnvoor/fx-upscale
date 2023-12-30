@@ -40,7 +40,13 @@ public class UpscalingExportSession {
             let formatDescription = try await track.load(.formatDescriptions).first
             switch track.mediaType {
             case .video:
+                let dimensions = formatDescription.map {
+                    CMVideoFormatDescriptionGetDimensions($0)
+                }.map {
+                    CGSize(width: Int($0.width), height: Int($0.height))
+                }
                 let naturalSize = try await track.load(.naturalSize)
+                let inputSize = dimensions ?? naturalSize
                 let nominalFrameRate = try await track.load(.nominalFrameRate)
 
                 let videoOutput = AVAssetReaderVideoCompositionOutput(
@@ -67,7 +73,7 @@ public class UpscalingExportSession {
                     videoComposition.instructions = [instruction]
                     return videoComposition
                 }()
-                (videoOutput.customVideoCompositor as! UpscalingCompositor).inputSize = naturalSize
+                (videoOutput.customVideoCompositor as! UpscalingCompositor).inputSize = inputSize
                 (videoOutput.customVideoCompositor as! UpscalingCompositor).outputSize = outputSize
 
                 if assetReader.canAdd(videoOutput) {
