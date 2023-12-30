@@ -24,15 +24,15 @@ public class UpscalingExportSession {
     public let outputSize: CGSize
 
     public func export() async throws {
-        guard !FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false)) else {
-            throw Error.outputURLAlreadyExists
-        }
-
         if outputURL.pathExtension.lowercased() != "mov",
            (outputSize.width * outputSize.height) > Self.maxNonProResPixelCount {
             outputURL = outputURL
                 .deletingPathExtension()
                 .appendingPathExtension("mov")
+        }
+
+        guard !FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false)) else {
+            throw Error.outputURLAlreadyExists
         }
 
         let outputFileType: AVFileType = {
