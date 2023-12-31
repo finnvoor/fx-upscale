@@ -102,23 +102,22 @@ public class UpscalingExportSession {
                     videoCodec = .proRes422
                 }
 
-                var colorProperties: [String: Any] = [:]
-                if let colorPrimaries = formatDescription?.colorPrimaries {
-                    colorProperties[AVVideoColorPrimariesKey] = colorPrimaries
-                }
-                if let colorTransferFunction = formatDescription?.colorTransferFunction {
-                    colorProperties[AVVideoTransferFunctionKey] = colorTransferFunction
-                }
-                if let colorYCbCrMatrix = formatDescription?.colorYCbCrMatrix {
-                    colorProperties[AVVideoYCbCrMatrixKey] = colorYCbCrMatrix
-                }
-
-                let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: [
+                var outputSettings: [String: Any] = [
                     AVVideoWidthKey: outputSize.width,
                     AVVideoHeightKey: outputSize.height,
-                    AVVideoCodecKey: videoCodec,
-                    AVVideoColorPropertiesKey: colorProperties
-                ])
+                    AVVideoCodecKey: videoCodec
+                ]
+                if let colorPrimaries = formatDescription?.colorPrimaries,
+                   let colorTransferFunction = formatDescription?.colorTransferFunction,
+                   let colorYCbCrMatrix = formatDescription?.colorYCbCrMatrix {
+                    outputSettings[AVVideoColorPropertiesKey] = [
+                        AVVideoColorPrimariesKey: colorPrimaries,
+                        AVVideoTransferFunctionKey: colorTransferFunction,
+                        AVVideoYCbCrMatrixKey: colorYCbCrMatrix
+                    ]
+                }
+
+                let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
                 videoInput.expectsMediaDataInRealTime = false
                 if assetWriter.canAdd(videoInput) {
                     assetWriter.add(videoInput)
