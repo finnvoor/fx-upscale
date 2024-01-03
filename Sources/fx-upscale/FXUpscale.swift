@@ -28,7 +28,14 @@ import Upscaling
             throw ValidationError("Failed to get video track from input file")
         }
 
-        let inputSize = try await videoTrack.load(.naturalSize)
+        let formatDescription = try await videoTrack.load(.formatDescriptions).first
+        let dimensions = formatDescription.map {
+            CMVideoFormatDescriptionGetDimensions($0)
+        }.map {
+            CGSize(width: Int($0.width), height: Int($0.height))
+        }
+        let naturalSize = try await videoTrack.load(.naturalSize)
+        let inputSize = dimensions ?? naturalSize
 
         // 1. Use passed in width/height
         // 2. Use proportional width/height if only one is specified
