@@ -24,16 +24,29 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
     public func renderContextChanged(_: AVVideoCompositionRenderContext) {}
 
     public func startRequest(_ asyncVideoCompositionRequest: AVAsynchronousVideoCompositionRequest) {
-        let sourceFrame = asyncVideoCompositionRequest.sourceFrame(
-            byTrackID: CMPersistentTrackID(truncating: asyncVideoCompositionRequest.sourceTrackIDs[0])
-        )!
+        guard let trackID = asyncVideoCompositionRequest.sourceTrackIDs.first else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotGetSourceTrackID)
+            return
+        }
+        guard let sourceFrame = asyncVideoCompositionRequest.sourceFrame(
+            byTrackID: CMPersistentTrackID(truncating: trackID)
+        ) else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotGetSourceFrame)
+            return
+        }
         #if canImport(MetalFX)
-        let destinationFrame = asyncVideoCompositionRequest.renderContext.newPixelBuffer()!
+        guard let destinationFrame = asyncVideoCompositionRequest.renderContext.newPixelBuffer() else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotCreateDestinationPixelBuffer)
+            return
+        }
 
-        let commandBuffer = commandQueue.makeCommandBuffer()!
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotMakeCommandBuffer)
+            return
+        }
 
-        var colorTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(
+        var colorTexture: CVMetalTexture!
+        var status = CVMetalTextureCacheCreateTextureFromImage(
             nil,
             cvTextureCache,
             sourceFrame,
@@ -44,9 +57,13 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
             0,
             &colorTexture
         )
+        guard status == kCVReturnSuccess else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotCreateMetalTextureFromSourceFrame(status))
+            return
+        }
 
-        var outputTexture: CVMetalTexture?
-        CVMetalTextureCacheCreateTextureFromImage(
+        var outputTexture: CVMetalTexture!
+        status = CVMetalTextureCacheCreateTextureFromImage(
             nil,
             cvTextureCache,
             destinationFrame,
@@ -57,18 +74,32 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
             0,
             &outputTexture
         )
+        guard status == kCVReturnSuccess else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotCreateMetalTextureFromDestinationFrame(status))
+            return
+        }
 
-        let intermediateOutputTexture = device.makeTexture(descriptor: intermediateOutputTextureDescriptor)!
-        spatialScaler.colorTexture = CVMetalTextureGetTexture(colorTexture!)
+        guard let intermediateOutputTexture = device.makeTexture(descriptor: intermediateOutputTextureDescriptor) else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotMakeIntermediateOutputTexture)
+            return
+        }
+        spatialScaler.colorTexture = CVMetalTextureGetTexture(colorTexture)
         spatialScaler.outputTexture = intermediateOutputTexture
 
         spatialScaler.encode(commandBuffer: commandBuffer)
-        let blitCommandEncoder = commandBuffer.makeBlitCommandEncoder()!
-        blitCommandEncoder.copy(from: intermediateOutputTexture, to: CVMetalTextureGetTexture(outputTexture!)!)
+        guard let blitCommandEncoder = commandBuffer.makeBlitCommandEncoder() else {
+            asyncVideoCompositionRequest.finish(with: Error.couldNotMakeBlitCommandEncoder)
+            return
+        }
+        blitCommandEncoder.copy(from: intermediateOutputTexture, to: CVMetalTextureGetTexture(outputTexture)!)
         blitCommandEncoder.endEncoding()
 
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error {
+            asyncVideoCompositionRequest.finish(with: error)
+            return
+        }
 
         asyncVideoCompositionRequest.finish(withComposedVideoFrame: destinationFrame)
         #else
@@ -109,4 +140,19 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
         textureDescriptor.usage = [.renderTarget, .shaderRead]
         return textureDescriptor
     }()
+}
+
+// MARK: UpscalingCompositor.Error
+
+extension UpscalingCompositor {
+    enum Error: Swift.Error {
+        case couldNotGetSourceTrackID
+        case couldNotGetSourceFrame
+        case couldNotCreateDestinationPixelBuffer
+        case couldNotMakeCommandBuffer
+        case couldNotCreateMetalTextureFromSourceFrame(CVReturn)
+        case couldNotCreateMetalTextureFromDestinationFrame(CVReturn)
+        case couldNotMakeIntermediateOutputTexture
+        case couldNotMakeBlitCommandEncoder
+    }
 }

@@ -154,7 +154,7 @@ public class UpscalingExportSession {
         assetReader.startReading()
         assetWriter.startSession(atSourceTime: .zero)
 
-        await withCheckedContinuation { continuation in
+        try await withCheckedThrowingContinuation { continuation in
             // - Returns: Whether or not the input has read all available media data
             @Sendable func copyReadySamples(from output: AVAssetReaderOutput, to input: AVAssetWriterInput) -> Bool {
                 while input.isReadyForMoreMediaData {
@@ -173,20 +173,24 @@ public class UpscalingExportSession {
             @Sendable func finish() {
                 if assetWriter.status == .failed {
                     try? FileManager.default.removeItem(at: outputURL)
+                    continuation.resume(throwing: Error.assetWriterFailed(assetWriter.error))
+                    return
+                }
+
+                if assetReader.status == .failed {
+                    try? FileManager.default.removeItem(at: outputURL)
+                    continuation.resume(throwing: Error.assetReaderFailed(assetReader.error))
+                    return
+                }
+
+                if assetWriter.status == .cancelled {
+                    try? FileManager.default.removeItem(at: self.outputURL)
+                    continuation.resume(throwing: Error.cancelled)
+                    return
+                }
+
+                assetWriter.finishWriting {
                     continuation.resume()
-                } else if assetReader.status == .failed {
-                    assetWriter.cancelWriting()
-                    if [.cancelled, .failed].contains(assetWriter.status) {
-                        try? FileManager.default.removeItem(at: outputURL)
-                    }
-                    continuation.resume()
-                } else {
-                    assetWriter.finishWriting {
-                        if [.cancelled, .failed].contains(assetWriter.status) {
-                            try? FileManager.default.removeItem(at: self.outputURL)
-                        }
-                        continuation.resume()
-                    }
                 }
             }
 
@@ -228,5 +232,8 @@ extension UpscalingExportSession {
         case couldNotAddAssetWriterVideoInput
         case couldNotAddAssetReaderAudioOutput
         case couldNotAddAssetWriterAudioInput
+        case assetReaderFailed(Swift.Error?)
+        case assetWriterFailed(Swift.Error?)
+        case cancelled
     }
 }
