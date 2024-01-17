@@ -8,11 +8,13 @@ public class UpscalingExportSession {
     public init(
         asset: AVAsset,
         outputURL: URL,
-        outputSize: CGSize
+        outputSize: CGSize,
+        creator: String? = nil
     ) {
         self.asset = asset
         self.outputURL = outputURL
         self.outputSize = outputSize
+        self.creator = creator
     }
 
     // MARK: Public
@@ -22,6 +24,7 @@ public class UpscalingExportSession {
     public let asset: AVAsset
     public private(set) var outputURL: URL
     public let outputSize: CGSize
+    public let creator: String?
 
     public func export() async throws {
         if outputURL.pathExtension.lowercased() != "mov",
@@ -118,6 +121,11 @@ public class UpscalingExportSession {
                 }
 
                 let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
+
+                // I would assume this should be adjusted for the new scale,
+                // but it seems to work fine...
+                videoInput.transform = try await track.load(.preferredTransform)
+
                 videoInput.expectsMediaDataInRealTime = false
                 if assetWriter.canAdd(videoInput) {
                     assetWriter.add(videoInput)
@@ -216,6 +224,26 @@ public class UpscalingExportSession {
                 }
             }
         } as Void
+
+        if let creator {
+            let value = try PropertyListSerialization.data(
+                fromPropertyList: creator,
+                format: .binary,
+                options: 0
+            )
+            _ = outputURL.withUnsafeFileSystemRepresentation { fileSystemPath in
+                value.withUnsafeBytes {
+                    setxattr(
+                        fileSystemPath,
+                        "com.apple.metadata:kMDItemCreator",
+                        $0.baseAddress,
+                        value.count,
+                        0,
+                        0
+                    )
+                }
+            }
+        }
     }
 
     // MARK: Private
