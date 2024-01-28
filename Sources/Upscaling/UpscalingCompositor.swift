@@ -25,7 +25,7 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
 
     public func startRequest(_ asyncVideoCompositionRequest: AVAsynchronousVideoCompositionRequest) {
         guard let trackID = asyncVideoCompositionRequest.sourceTrackIDs.first else {
-            asyncVideoCompositionRequest.finish(with: Error.couldNotGetSourceTrackID)
+            asyncVideoCompositionRequest.finishCancelledRequest()
             return
         }
         guard let sourceFrame = asyncVideoCompositionRequest.sourceFrame(
