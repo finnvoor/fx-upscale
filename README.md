@@ -7,7 +7,7 @@ Metal-powered video upscaling
 </p>
 
 > [!TIP]
-> Looking for an app-based version of `fx-upscale`? Pre-order [_Unsqueeze_](https://apps.apple.com/app/apple-store/id6475134617?pt=120542042&ct=github&mt=8) today! 🔥
+> Looking for an app-based version of `fx-upscale`? Download [_Unsqueeze_](https://apps.apple.com/app/apple-store/id6475134617?pt=120542042&ct=github&mt=8) today! 🔥
 
 ## Usage
 ```
