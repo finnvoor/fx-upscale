@@ -79,7 +79,7 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
             return
         }
 
-        guard let intermediateOutputTexture = device.makeTexture(descriptor: intermediateOutputTextureDescriptor) else {
+        guard let intermediateOutputTexture else {
             asyncVideoCompositionRequest.finish(with: Error.couldNotMakeIntermediateOutputTexture)
             return
         }
@@ -140,6 +140,10 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
         textureDescriptor.usage = [.renderTarget, .shaderRead]
         return textureDescriptor
     }()
+
+    private lazy var intermediateOutputTexture: MTLTexture? = device.makeTexture(
+        descriptor: intermediateOutputTextureDescriptor
+    )
 }
 
 // MARK: UpscalingCompositor.Error
