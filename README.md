@@ -3,7 +3,6 @@ Metal-powered video upscaling
 
 <p align="center">
 <img src="https://github.com/Finnvoor/fx-upscale/assets/8284016/b3613348-a553-43b6-a607-fd35f33d99d6" width="800" />
-  <img src="https://github.com/finnvoor/fx-upscale/assets/8284016/7ae867c2-caef-43d8-8fe3-7048c55f55bd" width="800" />
 </p>
 
 > [!TIP]
@@ -41,3 +40,6 @@ mint install finnvoor/fx-upscale
 
 ### Manual
 Download the latest release from [releases](https://github.com/Finnvoor/MetalFXUpscale/releases).
+
+#### `ffmpeg` upscaling vs `fx-upscale`
+<img src="https://github.com/finnvoor/fx-upscale/assets/8284016/7ae867c2-caef-43d8-8fe3-7048c55f55bd" width="800" />
