@@ -133,7 +133,7 @@ public class UpscalingExportSession {
                     throw Error.couldNotAddAssetWriterVideoInput
                 }
             case .audio:
-                let audioOutput = AVAssetReaderAudioMixOutput(audioTracks: [track], audioSettings: nil)
+                let audioOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
                 audioOutput.alwaysCopiesSampleData = false
                 if assetReader.canAdd(audioOutput) {
                     assetReader.add(audioOutput)

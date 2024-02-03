@@ -34,6 +34,10 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
             asyncVideoCompositionRequest.finish(with: Error.couldNotGetSourceFrame)
             return
         }
+        guard inputSize != outputSize else {
+            asyncVideoCompositionRequest.finish(withComposedVideoFrame: sourceFrame)
+            return
+        }
         #if canImport(MetalFX)
         guard let destinationFrame = asyncVideoCompositionRequest.renderContext.newPixelBuffer() else {
             asyncVideoCompositionRequest.finish(with: Error.couldNotCreateDestinationPixelBuffer)
