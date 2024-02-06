@@ -253,7 +253,7 @@ public class UpscalingExportSession {
 
 // MARK: UpscalingExportSession.Error
 
-extension UpscalingExportSession {
+public extension UpscalingExportSession {
     enum Error: Swift.Error {
         case outputURLAlreadyExists
         case couldNotAddAssetReaderVideoOutput

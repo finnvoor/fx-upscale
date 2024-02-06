@@ -152,7 +152,7 @@ public final class UpscalingCompositor: NSObject, AVVideoCompositing {
 
 // MARK: UpscalingCompositor.Error
 
-extension UpscalingCompositor {
+public extension UpscalingCompositor {
     enum Error: Swift.Error {
         case couldNotGetSourceTrackID
         case couldNotGetSourceFrame
