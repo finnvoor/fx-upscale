@@ -1,4 +1,5 @@
 import AVFoundation
+import VideoToolbox
 
 // MARK: - UpscalingExportSession
 
@@ -7,33 +8,37 @@ public class UpscalingExportSession {
 
     public init(
         asset: AVAsset,
-        outputURL: URL,
+        outputCodec: AVVideoCodecType? = nil,
+        preferredOutputURL: URL,
         outputSize: CGSize,
         creator: String? = nil
     ) {
         self.asset = asset
-        self.outputURL = outputURL
+        self.outputCodec = outputCodec
+        if preferredOutputURL.pathExtension.lowercased() != "mov", outputCodec?.isProRes ?? false {
+            outputURL = preferredOutputURL
+                .deletingPathExtension()
+                .appendingPathExtension("mov")
+        } else {
+            outputURL = preferredOutputURL
+        }
         self.outputSize = outputSize
         self.creator = creator
     }
 
     // MARK: Public
 
-    public static let maxSize = 16384
+    public static let maxOutputSize = 16384
 
     public let asset: AVAsset
-    public private(set) var outputURL: URL
+    public let outputCodec: AVVideoCodecType?
+    public let outputURL: URL
     public let outputSize: CGSize
     public let creator: String?
 
-    public func export() async throws {
-        if outputURL.pathExtension.lowercased() != "mov",
-           (outputSize.width * outputSize.height) > Self.maxNonProResPixelCount {
-            outputURL = outputURL
-                .deletingPathExtension()
-                .appendingPathExtension("mov")
-        }
+    public let progress = Progress()
 
+    public func export() async throws {
         guard !FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false)) else {
             throw Error.outputURLAlreadyExists
         }
@@ -51,108 +56,74 @@ public class UpscalingExportSession {
 
         let assetReader = try AVAssetReader(asset: asset)
 
-        let assetDuration = try await asset.load(.duration)
+        let duration = try await asset.load(.duration)
 
-        for track in try await asset.load(.tracks) {
+        var mediaTracks: [MediaTrack] = []
+        let tracks = try await asset.load(.tracks)
+        for track in tracks {
+            guard [.audio, .video].contains(track.mediaType) else { continue }
             let formatDescription = try await track.load(.formatDescriptions).first
-            switch track.mediaType {
-            case .video:
-                let dimensions = formatDescription.map {
-                    CMVideoFormatDescriptionGetDimensions($0)
-                }.map {
-                    CGSize(width: Int($0.width), height: Int($0.height))
-                }
-                let naturalSize = try await track.load(.naturalSize)
-                let inputSize = dimensions ?? naturalSize
-                let nominalFrameRate = try await track.load(.nominalFrameRate)
 
-                let videoOutput = AVAssetReaderVideoCompositionOutput(
-                    videoTracks: [track],
-                    videoSettings: nil
-                )
+            guard let assetReaderOutput = Self.assetReaderOutput(
+                for: track,
+                formatDescription: formatDescription
+            ),
+                let assetWriterInput = try await Self.assetWriterInput(
+                    for: track,
+                    formatDescription: formatDescription,
+                    outputSize: outputSize,
+                    outputCodec: outputCodec
+                ) else { continue }
 
-                videoOutput.alwaysCopiesSampleData = false
-                videoOutput.videoComposition = {
-                    let videoComposition = AVMutableVideoComposition()
-                    videoComposition.customVideoCompositorClass = UpscalingCompositor.self
-                    videoComposition.colorPrimaries = formatDescription?.colorPrimaries
-                    videoComposition.colorTransferFunction = formatDescription?.colorTransferFunction
-                    videoComposition.colorYCbCrMatrix = formatDescription?.colorYCbCrMatrix
-                    videoComposition.frameDuration = CMTime(
-                        value: 1,
-                        timescale: nominalFrameRate > 0 ? CMTimeScale(nominalFrameRate) : 30
-                    )
-                    videoComposition.renderSize = outputSize
-                    let instruction = AVMutableVideoCompositionInstruction()
-                    instruction.timeRange = CMTimeRange(start: .zero, duration: assetDuration)
-                    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
-                    instruction.layerInstructions = [layerInstruction]
-                    videoComposition.instructions = [instruction]
-                    return videoComposition
-                }()
-                (videoOutput.customVideoCompositor as! UpscalingCompositor).inputSize = inputSize
-                (videoOutput.customVideoCompositor as! UpscalingCompositor).outputSize = outputSize
+            if assetReader.canAdd(assetReaderOutput) {
+                assetReader.add(assetReaderOutput)
+            } else {
+                throw Error.couldNotAddAssetReaderOutput(track.mediaType)
+            }
 
-                if assetReader.canAdd(videoOutput) {
-                    assetReader.add(videoOutput)
+            if assetWriter.canAdd(assetWriterInput) {
+                assetWriter.add(assetWriterInput)
+            } else {
+                throw Error.couldNotAddAssetWriterInput(track.mediaType)
+            }
+
+            if track.mediaType == .audio {
+                progress.totalUnitCount += 1
+                mediaTracks.append(.audio(assetReaderOutput, assetWriterInput))
+            } else if track.mediaType == .video {
+                progress.totalUnitCount += 10
+                if #available(macOS 14.0, iOS 17.0, *),
+                   formatDescription?.hasLeftAndRightEye ?? false {
+                    try await mediaTracks.append(.spatialVideo(
+                        assetReaderOutput,
+                        assetWriterInput,
+                        track.load(.naturalSize),
+                        AVAssetWriterInputTaggedPixelBufferGroupAdaptor(
+                            assetWriterInput: assetWriterInput,
+                            sourcePixelBufferAttributes: [
+                                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                                kCVPixelBufferMetalCompatibilityKey as String: true,
+                                kCVPixelBufferWidthKey as String: outputSize.width,
+                                kCVPixelBufferHeightKey as String: outputSize.height
+                            ]
+                        )
+                    ))
                 } else {
-                    throw Error.couldNotAddAssetReaderVideoOutput
+                    try await mediaTracks.append(.video(
+                        assetReaderOutput,
+                        assetWriterInput,
+                        track.load(.naturalSize),
+                        AVAssetWriterInputPixelBufferAdaptor(
+                            assetWriterInput: assetWriterInput,
+                            sourcePixelBufferAttributes: [
+                                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                                kCVPixelBufferMetalCompatibilityKey as String: true,
+                                kCVPixelBufferWidthKey as String: outputSize.width,
+                                kCVPixelBufferHeightKey as String: outputSize.height
+                            ]
+                        )
+                    ))
                 }
-
-                var videoCodec = formatDescription?.videoCodecType ?? .hevc
-                if !videoCodec.isProRes,
-                   (outputSize.width * outputSize.height) > Self.maxNonProResPixelCount {
-                    videoCodec = .proRes422
-                }
-
-                var outputSettings: [String: Any] = [
-                    AVVideoWidthKey: outputSize.width,
-                    AVVideoHeightKey: outputSize.height,
-                    AVVideoCodecKey: videoCodec
-                ]
-                if let colorPrimaries = formatDescription?.colorPrimaries,
-                   let colorTransferFunction = formatDescription?.colorTransferFunction,
-                   let colorYCbCrMatrix = formatDescription?.colorYCbCrMatrix {
-                    outputSettings[AVVideoColorPropertiesKey] = [
-                        AVVideoColorPrimariesKey: colorPrimaries,
-                        AVVideoTransferFunctionKey: colorTransferFunction,
-                        AVVideoYCbCrMatrixKey: colorYCbCrMatrix
-                    ]
-                }
-
-                let videoInput = AVAssetWriterInput(mediaType: .video, outputSettings: outputSettings)
-
-                // I would assume this should be adjusted for the new scale,
-                // but it seems to work fine...
-                videoInput.transform = try await track.load(.preferredTransform)
-
-                videoInput.expectsMediaDataInRealTime = false
-                if assetWriter.canAdd(videoInput) {
-                    assetWriter.add(videoInput)
-                } else {
-                    throw Error.couldNotAddAssetWriterVideoInput
-                }
-            case .audio:
-                let audioOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
-                audioOutput.alwaysCopiesSampleData = false
-                if assetReader.canAdd(audioOutput) {
-                    assetReader.add(audioOutput)
-                } else {
-                    throw Error.couldNotAddAssetReaderAudioOutput
-                }
-
-                let audioInput = AVAssetWriterInput(
-                    mediaType: .audio,
-                    outputSettings: nil,
-                    sourceFormatHint: formatDescription
-                )
-                audioInput.expectsMediaDataInRealTime = false
-                if assetWriter.canAdd(audioInput) {
-                    assetWriter.add(audioInput)
-                } else {
-                    throw Error.couldNotAddAssetWriterAudioInput
-                }
-            default: continue
             }
         }
 
@@ -162,68 +133,64 @@ public class UpscalingExportSession {
         assetReader.startReading()
         assetWriter.startSession(atSourceTime: .zero)
 
-        try await withCheckedThrowingContinuation { continuation in
-            // - Returns: Whether or not the input has read all available media data
-            @Sendable func copyReadySamples(from output: AVAssetReaderOutput, to input: AVAssetWriterInput) -> Bool {
-                while input.isReadyForMoreMediaData {
-                    if let sampleBuffer = output.copyNextSampleBuffer() {
-                        if !input.append(sampleBuffer) {
-                            return true
-                        }
-                    } else {
-                        input.markAsFinished()
-                        return true
-                    }
-                }
-                return false
-            }
-
-            @Sendable func finish() {
-                if assetWriter.status == .failed {
-                    try? FileManager.default.removeItem(at: outputURL)
-                    continuation.resume(throwing: Error.assetWriterFailed(assetWriter.error))
-                    return
-                }
-
-                if assetReader.status == .failed {
-                    try? FileManager.default.removeItem(at: outputURL)
-                    continuation.resume(throwing: Error.assetReaderFailed(assetReader.error))
-                    return
-                }
-
-                if assetWriter.status == .cancelled {
-                    try? FileManager.default.removeItem(at: self.outputURL)
-                    continuation.resume(throwing: Error.cancelled)
-                    return
-                }
-
-                assetWriter.finishWriting {
-                    continuation.resume()
-                }
-            }
-
-            actor FinishCount {
-                var isFinished: Bool { count >= finishCount }
-                private var count = 0
-                private let finishCount: Int
-                func increment() { count += 1 }
-                init(finishCount: Int) { self.finishCount = finishCount }
-            }
-            let finishCount = FinishCount(finishCount: assetWriter.inputs.count)
-
-            let queue = DispatchQueue(label: String(describing: Self.self))
-            for (input, output) in zip(assetWriter.inputs, assetReader.outputs) {
-                input.requestMediaDataWhenReady(on: queue) {
-                    let finishedReading = copyReadySamples(from: output, to: input)
-                    if finishedReading {
-                        Task {
-                            await finishCount.increment()
-                            if await finishCount.isFinished { finish() }
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { [weak self] group in
+                for mediaTrack in mediaTracks {
+                    group.addTask { [weak self] in
+                        guard let self else { return }
+                        switch mediaTrack {
+                        case let .audio(output, input):
+                            let progress = Progress(totalUnitCount: Int64(duration.seconds))
+                            self.progress.addChild(progress, withPendingUnitCount: 1)
+                            try await Self.processAudioSamples(from: output, to: input, progress: progress)
+                        case let .video(output, input, inputSize, adaptor):
+                            let progress = Progress(totalUnitCount: Int64(duration.seconds))
+                            self.progress.addChild(progress, withPendingUnitCount: 10)
+                            try await Self.processVideoSamples(
+                                from: output,
+                                to: input,
+                                adaptor: adaptor,
+                                inputSize: inputSize,
+                                outputSize: outputSize,
+                                progress: progress
+                            )
+                        case let .spatialVideo(output, input, inputSize, adaptor):
+                            if #available(macOS 14.0, iOS 17.0, *) {
+                                let progress = Progress(totalUnitCount: Int64(duration.seconds))
+                                self.progress.addChild(progress, withPendingUnitCount: 10)
+                                try await Self.processSpatialVideoSamples(
+                                    from: output,
+                                    to: input,
+                                    adaptor: adaptor as! AVAssetWriterInputTaggedPixelBufferGroupAdaptor,
+                                    inputSize: inputSize,
+                                    outputSize: outputSize,
+                                    progress: progress
+                                )
+                            }
                         }
                     }
                 }
+                try await group.waitForAll()
             }
-        } as Void
+        } catch {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
+        }
+
+        if let error = assetWriter.error {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
+        }
+        if let error = assetReader.error {
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
+        }
+        if assetWriter.status == .cancelled || assetReader.status == .cancelled {
+            try? FileManager.default.removeItem(at: outputURL)
+            return
+        }
+
+        await assetWriter.finishWriting()
 
         if let creator {
             let value = try PropertyListSerialization.data(
@@ -248,7 +215,266 @@ public class UpscalingExportSession {
 
     // MARK: Private
 
-    private static let maxNonProResPixelCount: CGFloat = 3840 * 2160
+    private enum MediaTrack {
+        case audio(
+            _ output: AVAssetReaderOutput,
+            _ input: AVAssetWriterInput
+        )
+        case video(
+            _ output: AVAssetReaderOutput,
+            _ input: AVAssetWriterInput,
+            _ inputSize: CGSize,
+            _ adaptor: AVAssetWriterInputPixelBufferAdaptor
+        )
+        case spatialVideo(
+            _ output: AVAssetReaderOutput,
+            _ input: AVAssetWriterInput,
+            _ inputSize: CGSize,
+            _ adaptor: NSObject
+        )
+    }
+
+    private static func assetReaderOutput(
+        for track: AVAssetTrack,
+        formatDescription: CMFormatDescription?
+    ) -> AVAssetReaderOutput? {
+        switch track.mediaType {
+        case .video:
+            var outputSettings: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+            ]
+            if #available(macOS 14.0, iOS 17.0, *),
+               formatDescription?.hasLeftAndRightEye ?? false {
+                outputSettings[AVVideoDecompressionPropertiesKey] = [
+                    kVTDecompressionPropertyKey_RequestedMVHEVCVideoLayerIDs: [0, 1]
+                ]
+            }
+            let assetReaderOutput = AVAssetReaderTrackOutput(
+                track: track,
+                outputSettings: outputSettings
+            )
+            assetReaderOutput.alwaysCopiesSampleData = false
+            return assetReaderOutput
+        case .audio:
+            let assetReaderOutput = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            assetReaderOutput.alwaysCopiesSampleData = false
+            return assetReaderOutput
+        default: return nil
+        }
+    }
+
+    private static func assetWriterInput(
+        for track: AVAssetTrack,
+        formatDescription: CMFormatDescription?,
+        outputSize: CGSize,
+        outputCodec: AVVideoCodecType?
+    ) async throws -> AVAssetWriterInput? {
+        switch track.mediaType {
+        case .video:
+            var outputSettings: [String: Any] = [
+                AVVideoWidthKey: outputSize.width,
+                AVVideoHeightKey: outputSize.height,
+                AVVideoCodecKey: outputCodec ?? formatDescription?.videoCodecType ?? .hevc
+            ]
+            if let colorPrimaries = formatDescription?.colorPrimaries,
+               let colorTransferFunction = formatDescription?.colorTransferFunction,
+               let colorYCbCrMatrix = formatDescription?.colorYCbCrMatrix {
+                outputSettings[AVVideoColorPropertiesKey] = [
+                    AVVideoColorPrimariesKey: colorPrimaries,
+                    AVVideoTransferFunctionKey: colorTransferFunction,
+                    AVVideoYCbCrMatrixKey: colorYCbCrMatrix
+                ]
+            }
+            if #available(macOS 14.0, iOS 17.0, *),
+               formatDescription?.hasLeftAndRightEye ?? false {
+                var compressionProperties: [CFString: Any] = [:]
+                compressionProperties[kVTCompressionPropertyKey_MVHEVCVideoLayerIDs] = [0, 1]
+                if let extensions = formatDescription?.extensions {
+                    for key in [
+                        kVTCompressionPropertyKey_HeroEye,
+                        kVTCompressionPropertyKey_StereoCameraBaseline,
+                        kVTCompressionPropertyKey_HorizontalDisparityAdjustment,
+                        kCMFormatDescriptionExtension_HorizontalFieldOfView
+                    ] {
+                        if let value = extensions.first(
+                            where: { $0.key == key }
+                        )?.value {
+                            compressionProperties[key] = value
+                        }
+                    }
+                }
+                outputSettings[AVVideoCompressionPropertiesKey] = compressionProperties
+            }
+            let assetWriterInput = AVAssetWriterInput(
+                mediaType: .video,
+                outputSettings: outputSettings
+            )
+            assetWriterInput.transform = try await track.load(.preferredTransform)
+            assetWriterInput.expectsMediaDataInRealTime = false
+            return assetWriterInput
+        case .audio:
+            let assetWriterInput = AVAssetWriterInput(
+                mediaType: .audio,
+                outputSettings: nil,
+                sourceFormatHint: formatDescription
+            )
+            assetWriterInput.expectsMediaDataInRealTime = false
+            return assetWriterInput
+        default: return nil
+        }
+    }
+
+    private static func processAudioSamples(
+        from assetReaderOutput: AVAssetReaderOutput,
+        to assetWriterInput: AVAssetWriterInput,
+        progress: Progress
+    ) async throws {
+        try await withCheckedThrowingContinuation { continuation in
+            let queue = DispatchQueue(
+                label: "\(String(describing: Self.self)).audio.\(UUID().uuidString)",
+                qos: .userInitiated
+            )
+            assetWriterInput.requestMediaDataWhenReady(on: queue) {
+                while assetWriterInput.isReadyForMoreMediaData {
+                    if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
+                        if nextSampleBuffer.presentationTimeStamp.isNumeric {
+                            progress.completedUnitCount = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                        }
+                        guard assetWriterInput.append(nextSampleBuffer) else {
+                            assetWriterInput.markAsFinished()
+                            continuation.resume()
+                            return
+                        }
+                    } else {
+                        assetWriterInput.markAsFinished()
+                        continuation.resume()
+                    }
+                }
+            }
+        } as Void
+    }
+
+    private static func processVideoSamples(
+        from assetReaderOutput: AVAssetReaderOutput,
+        to assetWriterInput: AVAssetWriterInput,
+        adaptor: AVAssetWriterInputPixelBufferAdaptor,
+        inputSize: CGSize,
+        outputSize: CGSize,
+        progress: Progress
+    ) async throws {
+        guard let upscaler = Upscaler(inputSize: inputSize, outputSize: outputSize) else {
+            throw Error.failedToCreateUpscaler
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            let queue = DispatchQueue(
+                label: "\(String(describing: Self.self)).video.\(UUID().uuidString)",
+                qos: .userInitiated
+            )
+            assetWriterInput.requestMediaDataWhenReady(on: queue) {
+                while assetWriterInput.isReadyForMoreMediaData {
+                    if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
+                        if nextSampleBuffer.presentationTimeStamp.isNumeric {
+                            progress.completedUnitCount = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                        }
+                        if let imageBuffer = nextSampleBuffer.imageBuffer {
+                            let upscaledImageBuffer = upscaler.upscale(
+                                imageBuffer,
+                                pixelBufferPool: adaptor.pixelBufferPool
+                            )
+                            guard adaptor.append(
+                                upscaledImageBuffer,
+                                withPresentationTime: nextSampleBuffer.presentationTimeStamp
+                            ) else {
+                                assetWriterInput.markAsFinished()
+                                continuation.resume()
+                                return
+                            }
+                        } else {
+                            assetWriterInput.markAsFinished()
+                            continuation.resume(throwing: Error.missingImageBuffer)
+                        }
+                    } else {
+                        assetWriterInput.markAsFinished()
+                        continuation.resume()
+                    }
+                }
+            }
+        } as Void
+    }
+
+    @available(macOS 14.0, iOS 17.0, *) private static func processSpatialVideoSamples(
+        from assetReaderOutput: AVAssetReaderOutput,
+        to assetWriterInput: AVAssetWriterInput,
+        adaptor: AVAssetWriterInputTaggedPixelBufferGroupAdaptor,
+        inputSize: CGSize,
+        outputSize: CGSize,
+        progress: Progress
+    ) async throws {
+        guard let upscaler = Upscaler(inputSize: inputSize, outputSize: outputSize) else {
+            throw Error.failedToCreateUpscaler
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            let queue = DispatchQueue(
+                label: "\(String(describing: Self.self)).spatialvideo.\(UUID().uuidString)",
+                qos: .userInitiated
+            )
+            assetWriterInput.requestMediaDataWhenReady(on: queue) {
+                while assetWriterInput.isReadyForMoreMediaData {
+                    if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
+                        if nextSampleBuffer.presentationTimeStamp.isNumeric {
+                            progress.completedUnitCount = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                        }
+                        if let taggedBuffers = nextSampleBuffer.taggedBuffers {
+                            let leftEyeBuffer = taggedBuffers.first(where: {
+                                $0.tags.first(matchingCategory: .stereoView) == .stereoView(.leftEye)
+                            })?.buffer
+                            let rightEyeBuffer = taggedBuffers.first(where: {
+                                $0.tags.first(matchingCategory: .stereoView) == .stereoView(.rightEye)
+                            })?.buffer
+                            guard let leftEyeBuffer,
+                                  let rightEyeBuffer,
+                                  case let .pixelBuffer(leftEyePixelBuffer) = leftEyeBuffer,
+                                  case let .pixelBuffer(rightEyePixelBuffer) = rightEyeBuffer else {
+                                assetWriterInput.markAsFinished()
+                                continuation.resume(throwing: Error.invalidTaggedBuffers)
+                                return
+                            }
+                            let upscaledLeftEyePixelBuffer = upscaler.upscale(
+                                leftEyePixelBuffer,
+                                pixelBufferPool: adaptor.pixelBufferPool
+                            )
+                            let upscaledRightEyePixelBuffer = upscaler.upscale(
+                                rightEyePixelBuffer,
+                                pixelBufferPool: adaptor.pixelBufferPool
+                            )
+                            let leftEyeTaggedBuffer = CMTaggedBuffer(
+                                tags: [.stereoView(.leftEye), .videoLayerID(0)],
+                                pixelBuffer: upscaledLeftEyePixelBuffer
+                            )
+                            let rightEyeTaggedBuffer = CMTaggedBuffer(
+                                tags: [.stereoView(.rightEye), .videoLayerID(1)],
+                                pixelBuffer: upscaledRightEyePixelBuffer
+                            )
+                            guard adaptor.appendTaggedBuffers(
+                                [leftEyeTaggedBuffer, rightEyeTaggedBuffer],
+                                withPresentationTime: nextSampleBuffer.presentationTimeStamp
+                            ) else {
+                                assetWriterInput.markAsFinished()
+                                continuation.resume()
+                                return
+                            }
+                        } else {
+                            assetWriterInput.markAsFinished()
+                            continuation.resume(throwing: Error.missingTaggedBuffers)
+                        }
+                    } else {
+                        assetWriterInput.markAsFinished()
+                        continuation.resume()
+                    }
+                }
+            }
+        } as Void
+    }
 }
 
 // MARK: UpscalingExportSession.Error
@@ -256,12 +482,11 @@ public class UpscalingExportSession {
 public extension UpscalingExportSession {
     enum Error: Swift.Error {
         case outputURLAlreadyExists
-        case couldNotAddAssetReaderVideoOutput
-        case couldNotAddAssetWriterVideoInput
-        case couldNotAddAssetReaderAudioOutput
-        case couldNotAddAssetWriterAudioInput
-        case assetReaderFailed(Swift.Error?)
-        case assetWriterFailed(Swift.Error?)
-        case cancelled
+        case couldNotAddAssetReaderOutput(AVMediaType)
+        case couldNotAddAssetWriterInput(AVMediaType)
+        case missingImageBuffer
+        case missingTaggedBuffers
+        case invalidTaggedBuffers
+        case failedToCreateUpscaler
     }
 }
