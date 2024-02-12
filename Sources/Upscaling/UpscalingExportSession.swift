@@ -348,6 +348,7 @@ public class UpscalingExportSession {
                     } else {
                         assetWriterInput.markAsFinished()
                         continuation.resume()
+                        return
                     }
                 }
             }
@@ -392,10 +393,12 @@ public class UpscalingExportSession {
                         } else {
                             assetWriterInput.markAsFinished()
                             continuation.resume(throwing: Error.missingImageBuffer)
+                            return
                         }
                     } else {
                         assetWriterInput.markAsFinished()
                         continuation.resume()
+                        return
                     }
                 }
             }
@@ -466,10 +469,12 @@ public class UpscalingExportSession {
                         } else {
                             assetWriterInput.markAsFinished()
                             continuation.resume(throwing: Error.missingTaggedBuffers)
+                            return
                         }
                     } else {
                         assetWriterInput.markAsFinished()
                         continuation.resume()
+                        return
                     }
                 }
             }
