@@ -59,4 +59,14 @@ extension CMFormatDescription {
         default: nil
         }
     }
+
+    @available(macOS 14.0, iOS 17.0, *) var hasLeftAndRightEye: Bool {
+        let hasLeftEye = (tagCollections ?? []).contains {
+            $0.contains { $0 == .stereoView(.leftEye) }
+        }
+        let hasRightEye = (tagCollections ?? []).contains {
+            $0.contains { $0 == .stereoView(.rightEye) }
+        }
+        return hasLeftEye && hasRightEye
+    }
 }
