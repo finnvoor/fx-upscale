@@ -2,7 +2,9 @@ import AVFoundation
 import CoreImage
 import CoreVideo
 import Foundation
+#if canImport(MetalFX)
 import MetalFX
+#endif
 
 // MARK: - Upscaler
 
@@ -10,6 +12,7 @@ public final class Upscaler {
     // MARK: Lifecycle
 
     public init?(inputSize: CGSize, outputSize: CGSize) {
+        #if canImport(MetalFX)
         let spatialScalerDescriptor = MTLFXSpatialScalerDescriptor()
         spatialScalerDescriptor.inputSize = inputSize
         spatialScalerDescriptor.outputSize = outputSize
@@ -42,6 +45,7 @@ public final class Upscaler {
         ] as CFDictionary, &pixelBufferPool)
         guard let pixelBufferPool else { return nil }
         self.pixelBufferPool = pixelBufferPool
+        #endif
     }
 
     // MARK: Public
@@ -51,6 +55,7 @@ public final class Upscaler {
         pixelBufferPool: CVPixelBufferPool? = nil,
         outputPixelBuffer: CVPixelBuffer? = nil
     ) async -> CVPixelBuffer {
+        #if canImport(MetalFX)
         do {
             let (commandBuffer, outputPixelBuffer) = try upscaleCommandBuffer(
                 pixelBuffer,
@@ -71,6 +76,9 @@ public final class Upscaler {
         } catch {
             return pixelBuffer
         }
+        #else
+        return pixelBuffer
+        #endif
     }
 
     @discardableResult public func upscale(
@@ -78,6 +86,7 @@ public final class Upscaler {
         pixelBufferPool: CVPixelBufferPool? = nil,
         outputPixelBuffer: CVPixelBuffer? = nil
     ) -> CVPixelBuffer {
+        #if canImport(MetalFX)
         do {
             let (commandBuffer, outputPixelBuffer) = try upscaleCommandBuffer(
                 pixelBuffer,
@@ -91,6 +100,9 @@ public final class Upscaler {
         } catch {
             return pixelBuffer
         }
+        #else
+        return pixelBuffer
+        #endif
     }
 
     public func upscale(
@@ -99,6 +111,7 @@ public final class Upscaler {
         outputPixelBuffer: CVPixelBuffer? = nil,
         completionHandler: @escaping (CVPixelBuffer) -> Void
     ) {
+        #if canImport(MetalFX)
         do {
             let (commandBuffer, outputPixelBuffer) = try upscaleCommandBuffer(
                 pixelBuffer,
@@ -116,10 +129,14 @@ public final class Upscaler {
         } catch {
             completionHandler(pixelBuffer)
         }
+        #else
+        completionHandler(pixelBuffer)
+        #endif
     }
 
     // MARK: Private
 
+    #if canImport(MetalFX)
     private let commandQueue: MTLCommandQueue
     private let spatialScaler: MTLFXSpatialScaler
     private let intermediateOutputTexture: MTLTexture
@@ -187,6 +204,7 @@ public final class Upscaler {
 
         return (commandBuffer, outputPixelBuffer)
     }
+    #endif
 }
 
 // MARK: Upscaler.Error

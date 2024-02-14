@@ -1,3 +1,4 @@
+#if canImport(MetalFX)
 import MetalFX
 
 extension MTLFXSpatialScalerDescriptor {
@@ -19,3 +20,4 @@ extension MTLFXSpatialScalerDescriptor {
         }
     }
 }
+#endif
