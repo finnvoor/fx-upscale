@@ -6,11 +6,13 @@ extension CMFormatDescription {
         case .hevc: return .hevc
         case .h264: return .h264
         case .jpeg: return .jpeg
+        #if !os(visionOS)
         case .proRes4444: return .proRes4444
         case .proRes422: return .proRes422
         case .proRes422HQ: return .proRes422HQ
         case .proRes422LT: return .proRes422LT
         case .proRes422Proxy: return .proRes422Proxy
+        #endif
         case .hevcWithAlpha: return .hevcWithAlpha
         default: return nil
         }
