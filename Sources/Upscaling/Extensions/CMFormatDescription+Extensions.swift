@@ -12,6 +12,7 @@ extension CMFormatDescription {
         case .proRes422HQ: return .proRes422HQ
         case .proRes422LT: return .proRes422LT
         case .proRes422Proxy: return .proRes422Proxy
+        case .proRes4444XQ: return AVVideoCodecType(rawValue: "ap4x")
         #endif
         case .hevcWithAlpha: return .hevcWithAlpha
         default: return nil
