@@ -67,9 +67,9 @@ import Upscaling
             "Upscaling from \(Int(inputSize.width))x\(Int(inputSize.height)) ",
             "to \(Int(outputSize.width))x\(Int(outputSize.height)) "
         ].joined())
-        ActivityIndicator.start()
+        ProgressBar.start(progress: exportSession.progress)
         try await exportSession.export()
-        ActivityIndicator.stop()
+        ProgressBar.stop()
         CommandLine.success("Video successfully upscaled!")
     }
 }
