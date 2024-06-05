@@ -23,6 +23,10 @@ let package = Package(
             ]
         ),
         .target(name: "Upscaling"),
-        .testTarget(name: "UpscalingTests", dependencies: ["Upscaling"], resources: [.process("Resources")])
+        .testTarget(
+            name: "UpscalingTests",
+            dependencies: ["Upscaling"],
+            resources: [.process("Resources")]
+        )
     ]
 )

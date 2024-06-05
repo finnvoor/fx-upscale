@@ -1,3 +1,5 @@
+import CoreImage
+import MetalFX
 @testable import Upscaling
 import XCTest
 
@@ -41,5 +43,22 @@ final class UpscalingTests: XCTestCase {
     func testExportProgress() async throws {
         // ensure progress works
         throw XCTSkip("unimplemented")
+    }
+
+    func testFilter() async throws {
+        let inputImage = CIImage(
+            contentsOf: Bundle.module.url(forResource: "ladybird", withExtension: "jpg")!
+        )!
+        let outputSize = CGSize(
+            width: inputImage.extent.width * 8,
+            height: inputImage.extent.height * 8
+        )
+
+        let filter = UpscalingFilter()
+        filter.inputImage = inputImage
+        filter.outputSize = outputSize
+        let outputImage = filter.outputImage!
+        // TODO: - diff images
+        XCTAssertEqual(outputImage.extent.size, outputSize)
     }
 }
