@@ -24,14 +24,25 @@ public class UpscalingFilter: CIFilter {
             spatialScalerDescriptor.outputTextureFormat = .bgra8Unorm
             spatialScalerDescriptor.colorProcessingMode = .perceptual
             spatialScaler = spatialScalerDescriptor.makeSpatialScaler(device: device)
+
+            let textureDescriptor = MTLTextureDescriptor()
+            textureDescriptor.width = Int(outputSize.width)
+            textureDescriptor.height = Int(outputSize.height)
+            textureDescriptor.pixelFormat = .bgra8Unorm
+            textureDescriptor.storageMode = .private
+            textureDescriptor.usage = [.renderTarget, .shaderRead]
+            intermediateOutputTexture = device.makeTexture(descriptor: textureDescriptor)
         }
 
-        guard let spatialScaler else { return nil }
+        guard let spatialScaler, let intermediateOutputTexture else { return nil }
 
         return try? UpscalingImageProcessorKernel.apply(
             withExtent: CGRect(origin: .zero, size: spatialScaler.outputSize),
             inputs: [inputImage],
-            arguments: ["spatialScaler": spatialScaler]
+            arguments: [
+                "spatialScaler": spatialScaler,
+                "intermediateOutputTexture": intermediateOutputTexture
+            ]
         )
         #else
         return inputImage
@@ -45,4 +56,5 @@ public class UpscalingFilter: CIFilter {
     #if canImport(MetalFX)
     private var spatialScaler: MTLFXSpatialScaler?
     #endif
+    private var intermediateOutputTexture: MTLTexture?
 }

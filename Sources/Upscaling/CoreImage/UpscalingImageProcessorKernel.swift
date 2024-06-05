@@ -25,8 +25,19 @@ public class UpscalingImageProcessorKernel: CIImageProcessorKernel {
             return
         }
         spatialScaler.colorTexture = inputTexture
-        spatialScaler.outputTexture = outputTexture
-        spatialScaler.encode(commandBuffer: commandBuffer)
+        if outputTexture.storageMode == .private {
+            spatialScaler.outputTexture = outputTexture
+            spatialScaler.encode(commandBuffer: commandBuffer)
+        } else {
+            guard let intermediateOutputTexture = arguments?["intermediateOutputTexture"] as? MTLTexture else {
+                return
+            }
+            spatialScaler.outputTexture = intermediateOutputTexture
+            spatialScaler.encode(commandBuffer: commandBuffer)
+            let blitCommandEncoder = commandBuffer.makeBlitCommandEncoder()
+            blitCommandEncoder?.copy(from: intermediateOutputTexture, to: outputTexture)
+            blitCommandEncoder?.endEncoding()
+        }
         #endif
     }
 
