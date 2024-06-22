@@ -24,6 +24,12 @@ public class UpscalingExportSession {
         }
         self.outputSize = outputSize
         self.creator = creator
+        progress = Progress(parent: nil, userInfo: [
+            .fileURLKey: outputURL
+        ])
+        progress.fileURL = outputURL
+        progress.isCancellable = false
+        progress.publish()
     }
 
     // MARK: Public
@@ -36,7 +42,7 @@ public class UpscalingExportSession {
     public let outputSize: CGSize
     public let creator: String?
 
-    public let progress = Progress()
+    public let progress: Progress
 
     public func export() async throws {
         guard !FileManager.default.fileExists(atPath: outputURL.path(percentEncoded: false)) else {
