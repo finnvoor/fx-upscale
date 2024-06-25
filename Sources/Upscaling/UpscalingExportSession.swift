@@ -29,7 +29,9 @@ public class UpscalingExportSession {
         ])
         progress.fileURL = outputURL
         progress.isCancellable = false
+        #if os(macOS)
         progress.publish()
+        #endif
     }
 
     // MARK: Public
