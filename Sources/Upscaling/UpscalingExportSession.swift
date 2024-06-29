@@ -11,6 +11,7 @@ public class UpscalingExportSession {
         outputCodec: AVVideoCodecType? = nil,
         preferredOutputURL: URL,
         outputSize: CGSize,
+        outputBitRate: Int? = nil,
         creator: String? = nil
     ) {
         self.asset = asset
@@ -23,6 +24,7 @@ public class UpscalingExportSession {
             outputURL = preferredOutputURL
         }
         self.outputSize = outputSize
+        self.outputBitRate = outputBitRate
         self.creator = creator
         progress = Progress(parent: nil, userInfo: [
             .fileURLKey: outputURL
@@ -42,6 +44,7 @@ public class UpscalingExportSession {
     public let outputCodec: AVVideoCodecType?
     public let outputURL: URL
     public let outputSize: CGSize
+    public let outputBitRate: Int?
     public let creator: String?
 
     public let progress: Progress
@@ -80,7 +83,8 @@ public class UpscalingExportSession {
                     for: track,
                     formatDescription: formatDescription,
                     outputSize: outputSize,
-                    outputCodec: outputCodec
+                    outputCodec: outputCodec,
+                    outputBitRate: outputBitRate
                 ) else { continue }
 
             if assetReader.canAdd(assetReaderOutput) {
@@ -275,7 +279,8 @@ public class UpscalingExportSession {
         for track: AVAssetTrack,
         formatDescription: CMFormatDescription?,
         outputSize: CGSize,
-        outputCodec: AVVideoCodecType?
+        outputCodec: AVVideoCodecType?,
+        outputBitRate: Int?
     ) async throws -> AVAssetWriterInput? {
         switch track.mediaType {
         case .video:
@@ -297,6 +302,11 @@ public class UpscalingExportSession {
                formatDescription?.hasLeftAndRightEye ?? false {
                 var compressionProperties: [CFString: Any] = [:]
                 compressionProperties[kVTCompressionPropertyKey_MVHEVCVideoLayerIDs] = [0, 1]
+                
+                if let outputBitRate {
+                    compressionProperties[AVVideoAverageBitRateKey as CFString] = outputBitRate
+                }
+                
                 if let extensions = formatDescription?.extensions {
                     for key in [
                         kVTCompressionPropertyKey_HeroEye,
