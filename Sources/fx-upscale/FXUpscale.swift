@@ -11,6 +11,7 @@ import Upscaling
 
     @Option(name: .shortAndLong, help: "The output file width") var width: Int?
     @Option(name: .shortAndLong, help: "The output file height") var height: Int?
+    @Option(name: .shortAndLong, help: "Output codec: 'hevc', 'prores', or 'h264' (default: hevc)") var codec: String = "hevc"
 
     mutating func run() async throws {
         guard ["mov", "m4v", "mp4"].contains(url.pathExtension.lowercased()) else {
@@ -51,13 +52,24 @@ import Upscaling
         }
 
         let outputSize = CGSize(width: width, height: height)
+        let outputCodec: AVVideoCodecType? = {
+            switch codec.lowercased() {
+            case "prores": return .proRes422
+            case "h264": return .h264
+            default: return .hevc
+            }
+        }()
 
-        let convertToProRes = (outputSize.width * outputSize.height) > (3840 * 2160) &&
-            !(formatDescription?.videoCodecType?.isProRes ?? false)
+        // Through anecdotal tests anything beyond 14.5K fails to encode for anything other than ProRes
+        let convertToProRes = (outputSize.width * outputSize.height) > (14500 * 8156)
+
+        if (convertToProRes) {
+            CommandLine.info("Forced ProRes conversion due to output size being larger than 14.5K (will fail otherwise)")
+        }
 
         let exportSession = UpscalingExportSession(
             asset: asset,
-            outputCodec: convertToProRes ? .proRes422 : nil,
+            outputCodec: convertToProRes ? .proRes422 : outputCodec,
             preferredOutputURL: url.renamed { "\($0) Upscaled" },
             outputSize: outputSize,
             creator: ProcessInfo.processInfo.processName
@@ -65,7 +77,8 @@ import Upscaling
 
         CommandLine.info([
             "Upscaling from \(Int(inputSize.width))x\(Int(inputSize.height)) ",
-            "to \(Int(outputSize.width))x\(Int(outputSize.height)) "
+            "to \(Int(outputSize.width))x\(Int(outputSize.height)) ",
+            "using codec: \(outputCodec?.rawValue ?? "hevc")"
         ].joined())
         ProgressBar.start(progress: exportSession.progress)
         try await exportSession.export()
