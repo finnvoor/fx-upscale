@@ -51,13 +51,11 @@ public class UpscalingExportSession {
             throw Error.outputURLAlreadyExists
         }
 
-        let outputFileType: AVFileType = {
-            switch outputURL.pathExtension.lowercased() {
-            case "mov": return .mov
-            case "m4v": return .m4v
-            default: return .mp4
-            }
-        }()
+        let outputFileType: AVFileType = switch outputURL.pathExtension.lowercased() {
+        case "mov": .mov
+        case "m4v": .m4v
+        default: .mp4
+        }
 
         let assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: outputFileType)
         assetWriter.metadata = try await asset.load(.metadata)
@@ -383,7 +381,10 @@ public class UpscalingExportSession {
                 while assetWriterInput.isReadyForMoreMediaData {
                     if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
                         if nextSampleBuffer.presentationTimeStamp.isNumeric {
-                            progress.completedUnitCount = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                            let timestamp = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                            DispatchQueue.main.async {
+                                progress.completedUnitCount = timestamp
+                            }
                         }
                         if let imageBuffer = nextSampleBuffer.imageBuffer {
                             let upscaledImageBuffer = upscaler.upscale(
@@ -433,7 +434,10 @@ public class UpscalingExportSession {
                 while assetWriterInput.isReadyForMoreMediaData {
                     if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
                         if nextSampleBuffer.presentationTimeStamp.isNumeric {
-                            progress.completedUnitCount = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                            let timestamp = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                            DispatchQueue.main.async {
+                                progress.completedUnitCount = timestamp
+                            }
                         }
                         if let taggedBuffers = nextSampleBuffer.taggedBuffers {
                             let leftEyeBuffer = taggedBuffers.first(where: {

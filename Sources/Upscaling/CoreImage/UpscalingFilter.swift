@@ -9,9 +9,6 @@ import MetalFX
 public class UpscalingFilter: CIFilter {
     // MARK: Public
 
-    public var inputImage: CIImage?
-    public var outputSize: CGSize?
-
     override public var outputImage: CIImage? {
         #if canImport(MetalFX)
         guard let device, let inputImage, let outputSize else { return nil }
@@ -48,6 +45,9 @@ public class UpscalingFilter: CIFilter {
         return inputImage
         #endif
     }
+
+    public var inputImage: CIImage?
+    public var outputSize: CGSize?
 
     // MARK: Private
 
