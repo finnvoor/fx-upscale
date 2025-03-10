@@ -8,13 +8,10 @@ on:
     branches:
       - main
 
-env:
-  DEVELOPER_DIR: /Applications/Xcode_15.2.app/Contents/Developer
-
 jobs:
   build:
     name: Build
-    runs-on: macOS-14
+    runs-on: macOS-15
     strategy:
       matrix:
         destination:
