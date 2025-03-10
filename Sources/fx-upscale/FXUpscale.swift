@@ -52,18 +52,16 @@ import Upscaling
         }
 
         let outputSize = CGSize(width: width, height: height)
-        let outputCodec: AVVideoCodecType? = {
-            switch codec.lowercased() {
-            case "prores": return .proRes422
-            case "h264": return .h264
-            default: return .hevc
-            }
-        }()
+        let outputCodec: AVVideoCodecType? = switch codec.lowercased() {
+        case "prores": .proRes422
+        case "h264": .h264
+        default: .hevc
+        }
 
         // Through anecdotal tests anything beyond 14.5K fails to encode for anything other than ProRes
         let convertToProRes = (outputSize.width * outputSize.height) > (14500 * 8156)
 
-        if (convertToProRes) {
+        if convertToProRes {
             CommandLine.info("Forced ProRes conversion due to output size being larger than 14.5K (will fail otherwise)")
         }
 
