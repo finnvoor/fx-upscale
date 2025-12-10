@@ -344,7 +344,10 @@ public class UpscalingExportSession {
                 while assetWriterInput.isReadyForMoreMediaData {
                     if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
                         if nextSampleBuffer.presentationTimeStamp.isNumeric {
-                            progress.completedUnitCount = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                            let timestamp = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
+                            DispatchQueue.main.async {
+                                progress.completedUnitCount = timestamp
+                            }
                         }
                         guard assetWriterInput.append(nextSampleBuffer) else {
                             assetWriterInput.markAsFinished()
