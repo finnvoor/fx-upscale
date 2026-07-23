@@ -70,9 +70,19 @@ public class UpscalingExportSession {
             guard [.audio, .video].contains(track.mediaType) else { continue }
             let formatDescription = try await track.load(.formatDescriptions).first
 
+            if #available(macOS 14.0, iOS 17.0, *),
+               track.mediaType == .video,
+               formatDescription?.hasLeftAndRightEye ?? false {
+                let effectiveCodec = outputCodec ?? formatDescription?.videoCodecType ?? .hevc
+                guard effectiveCodec.supportsMultiviewHEVC else {
+                    throw Error.codecDoesNotSupportSpatialVideo(effectiveCodec)
+                }
+            }
+
             guard let assetReaderOutput = Self.assetReaderOutput(
                 for: track,
-                formatDescription: formatDescription
+                formatDescription: formatDescription,
+                outputCodec: outputCodec
             ),
                 let assetWriterInput = try await Self.assetWriterInput(
                     for: track,
@@ -99,7 +109,10 @@ public class UpscalingExportSession {
             } else if track.mediaType == .video {
                 progress.totalUnitCount += 10
                 if #available(macOS 14.0, iOS 17.0, *),
-                   formatDescription?.hasLeftAndRightEye ?? false {
+                   Self.shouldExportSpatialVideo(
+                       formatDescription: formatDescription,
+                       outputCodec: outputCodec
+                   ) {
                     try await mediaTracks.append(.spatialVideo(
                         assetReaderOutput,
                         assetWriterInput,
@@ -260,9 +273,22 @@ public class UpscalingExportSession {
         return supportedProperties[property as String] != nil
     }
 
+    /// Whether the export should produce an MV-HEVC (spatial) video: the source
+    /// must contain left and right eye layers and the output codec must support MV-HEVC.
+    @available(macOS 14.0, iOS 17.0, *)
+    private static func shouldExportSpatialVideo(
+        formatDescription: CMFormatDescription?,
+        outputCodec: AVVideoCodecType?
+    ) -> Bool {
+        guard formatDescription?.hasLeftAndRightEye ?? false else { return false }
+        let effectiveCodec = outputCodec ?? formatDescription?.videoCodecType ?? .hevc
+        return effectiveCodec.supportsMultiviewHEVC
+    }
+
     private static func assetReaderOutput(
         for track: AVAssetTrack,
-        formatDescription: CMFormatDescription?
+        formatDescription: CMFormatDescription?,
+        outputCodec: AVVideoCodecType?
     ) -> AVAssetReaderOutput? {
         switch track.mediaType {
         case .video:
@@ -270,7 +296,10 @@ public class UpscalingExportSession {
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
             ]
             if #available(macOS 14.0, iOS 17.0, *),
-               formatDescription?.hasLeftAndRightEye ?? false {
+               shouldExportSpatialVideo(
+                   formatDescription: formatDescription,
+                   outputCodec: outputCodec
+               ) {
                 outputSettings[AVVideoDecompressionPropertiesKey] = [
                     kVTDecompressionPropertyKey_RequestedMVHEVCVideoLayerIDs: [0, 1]
                 ]
@@ -323,7 +352,10 @@ public class UpscalingExportSession {
                 compressionProperties[kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality] = true
             }
             if #available(macOS 14.0, iOS 17.0, *),
-               formatDescription?.hasLeftAndRightEye ?? false {
+               shouldExportSpatialVideo(
+                   formatDescription: formatDescription,
+                   outputCodec: outputCodec
+               ) {
                 compressionProperties[kVTCompressionPropertyKey_MVHEVCVideoLayerIDs] = [0, 1]
                 if let extensions = formatDescription?.extensions {
                     for key in [
@@ -583,5 +615,20 @@ public extension UpscalingExportSession {
         case missingTaggedBuffers
         case invalidTaggedBuffers
         case failedToCreateUpscaler
+        case codecDoesNotSupportSpatialVideo(AVVideoCodecType)
+    }
+}
+
+// MARK: - UpscalingExportSession.Error + LocalizedError
+
+extension UpscalingExportSession.Error: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case let .codecDoesNotSupportSpatialVideo(codec):
+            "The \(codec.rawValue) codec does not support spatial (MV-HEVC) video. " +
+                "Use the HEVC codec to preserve spatial video."
+        default:
+            "\(self)"
+        }
     }
 }

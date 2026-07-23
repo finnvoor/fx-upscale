@@ -15,4 +15,9 @@ public extension AVVideoCodecType {
         guard bytes.count == 4 else { return nil }
         return bytes.reduce(CMVideoCodecType(0)) { ($0 << 8) | CMVideoCodecType($1) }
     }
+
+    /// Whether this codec supports MV-HEVC (spatial video) encoding.
+    var supportsMultiviewHEVC: Bool {
+        self == .hevc
+    }
 }
