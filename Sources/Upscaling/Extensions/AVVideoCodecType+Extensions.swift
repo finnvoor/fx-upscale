@@ -9,4 +9,10 @@ public extension AVVideoCodecType {
         default: false
         }
     }
+
+    var cmVideoCodecType: CMVideoCodecType? {
+        let bytes = Array(rawValue.utf8)
+        guard bytes.count == 4 else { return nil }
+        return bytes.reduce(CMVideoCodecType(0)) { ($0 << 8) | CMVideoCodecType($1) }
+    }
 }

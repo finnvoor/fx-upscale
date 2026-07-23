@@ -240,6 +240,26 @@ public class UpscalingExportSession {
         )
     }
 
+    private static func encoder(
+        _ codec: AVVideoCodecType,
+        supportsProperty property: CFString,
+        outputSize: CGSize
+    ) -> Bool {
+        guard let codecType = codec.cmVideoCodecType else { return false }
+        var supportedProperties: CFDictionary?
+        let status = VTCopySupportedPropertyDictionaryForEncoder(
+            width: Int32(outputSize.width),
+            height: Int32(outputSize.height),
+            codecType: codecType,
+            encoderSpecification: nil,
+            encoderIDOut: nil,
+            supportedPropertiesOut: &supportedProperties
+        )
+        guard status == noErr,
+              let supportedProperties = supportedProperties as? [String: Any] else { return false }
+        return supportedProperties[property as String] != nil
+    }
+
     private static func assetReaderOutput(
         for track: AVAssetTrack,
         formatDescription: CMFormatDescription?
@@ -277,10 +297,11 @@ public class UpscalingExportSession {
     ) async throws -> AVAssetWriterInput? {
         switch track.mediaType {
         case .video:
+            let codec = outputCodec ?? formatDescription?.videoCodecType ?? .hevc
             var outputSettings: [String: Any] = [
                 AVVideoWidthKey: outputSize.width,
                 AVVideoHeightKey: outputSize.height,
-                AVVideoCodecKey: outputCodec ?? formatDescription?.videoCodecType ?? .hevc
+                AVVideoCodecKey: codec
             ]
             if let colorPrimaries = formatDescription?.colorPrimaries,
                let colorTransferFunction = formatDescription?.colorTransferFunction,
@@ -291,9 +312,18 @@ public class UpscalingExportSession {
                     AVVideoYCbCrMatrixKey: colorYCbCrMatrix
                 ]
             }
+            var compressionProperties: [CFString: Any] = [:]
+            // Speed up the encoder where supported; querying at runtime avoids
+            // setting it where it would throw (ProRes, H.264 above ~4K, etc).
+            if Self.encoder(
+                codec,
+                supportsProperty: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                outputSize: outputSize
+            ) {
+                compressionProperties[kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality] = true
+            }
             if #available(macOS 14.0, iOS 17.0, *),
                formatDescription?.hasLeftAndRightEye ?? false {
-                var compressionProperties: [CFString: Any] = [:]
                 compressionProperties[kVTCompressionPropertyKey_MVHEVCVideoLayerIDs] = [0, 1]
                 if let extensions = formatDescription?.extensions {
                     for key in [
@@ -309,6 +339,8 @@ public class UpscalingExportSession {
                         }
                     }
                 }
+            }
+            if !compressionProperties.isEmpty {
                 outputSettings[AVVideoCompressionPropertiesKey] = compressionProperties
             }
             let assetWriterInput = AVAssetWriterInput(
