@@ -69,6 +69,7 @@ public class UpscalingExportSession {
         for track in tracks {
             guard [.audio, .video].contains(track.mediaType) else { continue }
             let formatDescription = try await track.load(.formatDescriptions).first
+            let pixelFormat = Self.workingPixelFormat(for: formatDescription)
 
             if #available(macOS 14.0, iOS 17.0, *),
                track.mediaType == .video,
@@ -117,10 +118,11 @@ public class UpscalingExportSession {
                         assetReaderOutput,
                         assetWriterInput,
                         track.load(.naturalSize),
+                        pixelFormat,
                         AVAssetWriterInputTaggedPixelBufferGroupAdaptor(
                             assetWriterInput: assetWriterInput,
                             sourcePixelBufferAttributes: [
-                                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
                                 kCVPixelBufferMetalCompatibilityKey as String: true,
                                 kCVPixelBufferWidthKey as String: outputSize.width,
                                 kCVPixelBufferHeightKey as String: outputSize.height
@@ -132,10 +134,11 @@ public class UpscalingExportSession {
                         assetReaderOutput,
                         assetWriterInput,
                         track.load(.naturalSize),
+                        pixelFormat,
                         AVAssetWriterInputPixelBufferAdaptor(
                             assetWriterInput: assetWriterInput,
                             sourcePixelBufferAttributes: [
-                                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
                                 kCVPixelBufferMetalCompatibilityKey as String: true,
                                 kCVPixelBufferWidthKey as String: outputSize.width,
                                 kCVPixelBufferHeightKey as String: outputSize.height
@@ -162,7 +165,7 @@ public class UpscalingExportSession {
                             let progress = Progress(totalUnitCount: Int64(duration.seconds))
                             self.progress.addChild(progress, withPendingUnitCount: 1)
                             try await Self.processAudioSamples(from: output, to: input, progress: progress)
-                        case let .video(output, input, inputSize, adaptor):
+                        case let .video(output, input, inputSize, pixelFormat, adaptor):
                             let progress = Progress(totalUnitCount: Int64(duration.seconds))
                             self.progress.addChild(progress, withPendingUnitCount: 10)
                             try await Self.processVideoSamples(
@@ -171,9 +174,10 @@ public class UpscalingExportSession {
                                 adaptor: adaptor,
                                 inputSize: inputSize,
                                 outputSize: outputSize,
+                                pixelFormat: pixelFormat,
                                 progress: progress
                             )
-                        case let .spatialVideo(output, input, inputSize, adaptor):
+                        case let .spatialVideo(output, input, inputSize, pixelFormat, adaptor):
                             if #available(macOS 14.0, iOS 17.0, *) {
                                 let progress = Progress(totalUnitCount: Int64(duration.seconds))
                                 self.progress.addChild(progress, withPendingUnitCount: 10)
@@ -183,6 +187,7 @@ public class UpscalingExportSession {
                                     adaptor: adaptor as! AVAssetWriterInputTaggedPixelBufferGroupAdaptor,
                                     inputSize: inputSize,
                                     outputSize: outputSize,
+                                    pixelFormat: pixelFormat,
                                     progress: progress
                                 )
                             }
@@ -243,12 +248,14 @@ public class UpscalingExportSession {
             _ output: AVAssetReaderOutput,
             _ input: AVAssetWriterInput,
             _ inputSize: CGSize,
+            _ pixelFormat: OSType,
             _ adaptor: AVAssetWriterInputPixelBufferAdaptor
         )
         case spatialVideo(
             _ output: AVAssetReaderOutput,
             _ input: AVAssetWriterInput,
             _ inputSize: CGSize,
+            _ pixelFormat: OSType,
             _ adaptor: NSObject
         )
     }
@@ -293,7 +300,7 @@ public class UpscalingExportSession {
         switch track.mediaType {
         case .video:
             var outputSettings: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
+                kCVPixelBufferPixelFormatTypeKey as String: Self.workingPixelFormat(for: formatDescription)
             ]
             if #available(macOS 14.0, iOS 17.0, *),
                shouldExportSpatialVideo(
@@ -316,6 +323,12 @@ public class UpscalingExportSession {
             return assetReaderOutput
         default: return nil
         }
+    }
+
+    private static func workingPixelFormat(for formatDescription: CMFormatDescription?) -> OSType {
+        (formatDescription?.isHDR ?? false)
+            ? kCVPixelFormatType_64RGBAHalf
+            : kCVPixelFormatType_32BGRA
     }
 
     private static func assetWriterInput(
@@ -342,6 +355,15 @@ public class UpscalingExportSession {
                 ]
             }
             var compressionProperties: [CFString: Any] = [:]
+            if formatDescription?.isHDR ?? false {
+                if codec == .hevc {
+                    compressionProperties[kVTCompressionPropertyKey_ProfileLevel] =
+                        kVTProfileLevel_HEVC_Main10_AutoLevel
+                }
+                for (key, value) in formatDescription?.hdrMetadata ?? [:] {
+                    compressionProperties[key] = value
+                }
+            }
             // Speed up the encoder where supported; querying at runtime avoids
             // setting it where it would throw (ProRes, H.264 above ~4K, etc).
             if Self.encoder(
@@ -436,9 +458,14 @@ public class UpscalingExportSession {
         adaptor: AVAssetWriterInputPixelBufferAdaptor,
         inputSize: CGSize,
         outputSize: CGSize,
+        pixelFormat: OSType,
         progress: Progress
     ) async throws {
-        guard let upscaler = Upscaler(inputSize: inputSize, outputSize: outputSize) else {
+        guard let upscaler = Upscaler(
+            inputSize: inputSize,
+            outputSize: outputSize,
+            pixelFormat: pixelFormat
+        ) else {
             throw Error.failedToCreateUpscaler
         }
 
@@ -505,9 +532,14 @@ public class UpscalingExportSession {
         adaptor: AVAssetWriterInputTaggedPixelBufferGroupAdaptor,
         inputSize: CGSize,
         outputSize: CGSize,
+        pixelFormat: OSType,
         progress: Progress
     ) async throws {
-        guard let upscaler = Upscaler(inputSize: inputSize, outputSize: outputSize) else {
+        guard let upscaler = Upscaler(
+            inputSize: inputSize,
+            outputSize: outputSize,
+            pixelFormat: pixelFormat
+        ) else {
             throw Error.failedToCreateUpscaler
         }
 

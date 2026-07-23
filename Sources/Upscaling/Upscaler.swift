@@ -11,18 +11,27 @@ import MetalFX
 public final class Upscaler {
     // MARK: Lifecycle
 
-    public init?(inputSize: CGSize, outputSize: CGSize) {
+    public init?(
+        inputSize: CGSize,
+        outputSize: CGSize,
+        pixelFormat: OSType = kCVPixelFormatType_32BGRA
+    ) {
         #if canImport(MetalFX)
+        self.pixelFormat = pixelFormat
+        let metalPixelFormat: MTLPixelFormat = pixelFormat == kCVPixelFormatType_64RGBAHalf
+            ? .rgba16Float
+            : .bgra8Unorm
+        self.metalPixelFormat = metalPixelFormat
         let spatialScalerDescriptor = MTLFXSpatialScalerDescriptor()
         spatialScalerDescriptor.inputSize = inputSize
         spatialScalerDescriptor.outputSize = outputSize
-        spatialScalerDescriptor.colorTextureFormat = .bgra8Unorm
-        spatialScalerDescriptor.outputTextureFormat = .bgra8Unorm
+        spatialScalerDescriptor.colorTextureFormat = metalPixelFormat
+        spatialScalerDescriptor.outputTextureFormat = metalPixelFormat
         spatialScalerDescriptor.colorProcessingMode = .perceptual
         let textureDescriptor = MTLTextureDescriptor()
         textureDescriptor.width = Int(outputSize.width)
         textureDescriptor.height = Int(outputSize.height)
-        textureDescriptor.pixelFormat = .bgra8Unorm
+        textureDescriptor.pixelFormat = metalPixelFormat
         textureDescriptor.storageMode = .private
         textureDescriptor.usage = [.renderTarget, .shaderRead]
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -38,7 +47,7 @@ public final class Upscaler {
         self.textureCache = textureCache
         var pixelBufferPool: CVPixelBufferPool?
         CVPixelBufferPoolCreate(nil, nil, [
-            kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey: pixelFormat,
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferWidthKey: outputSize.width,
             kCVPixelBufferHeightKey: outputSize.height
@@ -137,6 +146,8 @@ public final class Upscaler {
     // MARK: Private
 
     #if canImport(MetalFX)
+    private let pixelFormat: OSType
+    private let metalPixelFormat: MTLPixelFormat
     private let commandQueue: MTLCommandQueue
     private let spatialScaler: MTLFXSpatialScaler
     private let intermediateOutputTexture: MTLTexture
@@ -148,7 +159,7 @@ public final class Upscaler {
         pixelBufferPool: CVPixelBufferPool? = nil,
         outputPixelBuffer: CVPixelBuffer? = nil
     ) throws -> (MTLCommandBuffer, CVPixelBuffer) {
-        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == kCVPixelFormatType_32BGRA else {
+        guard CVPixelBufferGetPixelFormatType(pixelBuffer) == pixelFormat else {
             throw Error.unsupportedPixelFormat
         }
 
@@ -164,7 +175,7 @@ public final class Upscaler {
             textureCache,
             pixelBuffer,
             [:] as CFDictionary,
-            .bgra8Unorm,
+            metalPixelFormat,
             pixelBuffer.width,
             pixelBuffer.height,
             0,
@@ -181,7 +192,7 @@ public final class Upscaler {
             textureCache,
             outputPixelBuffer,
             [:] as CFDictionary,
-            .bgra8Unorm,
+            metalPixelFormat,
             outputPixelBuffer.width,
             outputPixelBuffer.height,
             0,
