@@ -64,7 +64,7 @@ public class UpscalingExportSession {
 
         let duration = try await asset.load(.duration)
 
-        var mediaTracks: [MediaTrack] = []
+        var mediaTracks: [MediaTrackTask] = []
         let tracks = try await asset.load(.tracks)
         for track in tracks {
             guard [.audio, .video].contains(track.mediaType) else { continue }
@@ -106,45 +106,104 @@ public class UpscalingExportSession {
 
             if track.mediaType == .audio {
                 progress.totalUnitCount += 1
-                mediaTracks.append(.audio(assetReaderOutput, assetWriterInput))
+                mediaTracks.append(MediaTrackTask(pendingUnitCount: 1) { progress in
+                    try await Self.copyAudioSamples(from: assetReaderOutput, to: assetWriterInput, progress: progress)
+                })
             } else if track.mediaType == .video {
                 progress.totalUnitCount += 10
+                let inputSize = try await track.load(.naturalSize)
+                let outputSize = outputSize
+                let sourcePixelBufferAttributes: [String: Any] = [
+                    kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
+                    kCVPixelBufferMetalCompatibilityKey as String: true,
+                    kCVPixelBufferWidthKey as String: outputSize.width,
+                    kCVPixelBufferHeightKey as String: outputSize.height
+                ]
                 if #available(macOS 14.0, iOS 17.0, *),
                    Self.shouldExportSpatialVideo(
                        formatDescription: formatDescription,
                        outputCodec: outputCodec
                    ) {
-                    try await mediaTracks.append(.spatialVideo(
-                        assetReaderOutput,
-                        assetWriterInput,
-                        track.load(.naturalSize),
-                        pixelFormat,
-                        AVAssetWriterInputTaggedPixelBufferGroupAdaptor(
-                            assetWriterInput: assetWriterInput,
-                            sourcePixelBufferAttributes: [
-                                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
-                                kCVPixelBufferMetalCompatibilityKey as String: true,
-                                kCVPixelBufferWidthKey as String: outputSize.width,
-                                kCVPixelBufferHeightKey as String: outputSize.height
-                            ]
+                    let adaptor = AVAssetWriterInputTaggedPixelBufferGroupAdaptor(
+                        assetWriterInput: assetWriterInput,
+                        sourcePixelBufferAttributes: sourcePixelBufferAttributes
+                    )
+                    mediaTracks.append(MediaTrackTask(pendingUnitCount: 10) { progress in
+                        try await Self.processVideoSamples(
+                            from: assetReaderOutput,
+                            to: assetWriterInput,
+                            inputSize: inputSize,
+                            outputSize: outputSize,
+                            pixelFormat: pixelFormat,
+                            progress: progress,
+                            label: "\(String(describing: Self.self)).spatialvideo",
+                            decode: { sampleBuffer -> (left: CVPixelBuffer, right: CVPixelBuffer) in
+                                try Self.stereoscopicPixelBuffers(from: sampleBuffer)
+                            },
+                            submitUpscale: { upscaler, frame, completion in
+                                let group = DispatchGroup()
+                                var left: CVPixelBuffer?
+                                var right: CVPixelBuffer?
+                                group.enter()
+                                upscaler.upscale(frame.left, pixelBufferPool: adaptor.pixelBufferPool) {
+                                    left = $0
+                                    group.leave()
+                                }
+                                group.enter()
+                                upscaler.upscale(frame.right, pixelBufferPool: adaptor.pixelBufferPool) {
+                                    right = $0
+                                    group.leave()
+                                }
+                                group.notify(queue: .global(qos: .userInitiated)) {
+                                    completion((left: left!, right: right!))
+                                }
+                            },
+                            append: { frame, time in
+                                adaptor.appendTaggedBuffers([
+                                    CMTaggedBuffer(
+                                        tags: [.stereoView(.leftEye), .videoLayerID(0)],
+                                        pixelBuffer: frame.left
+                                    ),
+                                    CMTaggedBuffer(
+                                        tags: [.stereoView(.rightEye), .videoLayerID(1)],
+                                        pixelBuffer: frame.right
+                                    )
+                                ], withPresentationTime: time)
+                            }
                         )
-                    ))
+                    })
                 } else {
-                    try await mediaTracks.append(.video(
-                        assetReaderOutput,
-                        assetWriterInput,
-                        track.load(.naturalSize),
-                        pixelFormat,
-                        AVAssetWriterInputPixelBufferAdaptor(
-                            assetWriterInput: assetWriterInput,
-                            sourcePixelBufferAttributes: [
-                                kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
-                                kCVPixelBufferMetalCompatibilityKey as String: true,
-                                kCVPixelBufferWidthKey as String: outputSize.width,
-                                kCVPixelBufferHeightKey as String: outputSize.height
-                            ]
+                    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+                        assetWriterInput: assetWriterInput,
+                        sourcePixelBufferAttributes: sourcePixelBufferAttributes
+                    )
+                    mediaTracks.append(MediaTrackTask(pendingUnitCount: 10) { progress in
+                        try await Self.processVideoSamples(
+                            from: assetReaderOutput,
+                            to: assetWriterInput,
+                            inputSize: inputSize,
+                            outputSize: outputSize,
+                            pixelFormat: pixelFormat,
+                            progress: progress,
+                            label: "\(String(describing: Self.self)).video",
+                            decode: { sampleBuffer -> CVPixelBuffer in
+                                guard let imageBuffer = sampleBuffer.imageBuffer else {
+                                    throw Error.missingImageBuffer
+                                }
+                                return imageBuffer
+                            },
+                            submitUpscale: { upscaler, frame, completion in
+                                upscaler.upscale(
+                                    frame,
+                                    pixelBufferPool: adaptor.pixelBufferPool,
+                                    completionHandler: completion
+                                )
+                            },
+                            append: { frame, time in
+                                adaptor.append(frame, withPresentationTime: time)
+                            }
                         )
-                    ))
+                    })
                 }
             }
         }
@@ -160,38 +219,9 @@ public class UpscalingExportSession {
                 for mediaTrack in mediaTracks {
                     group.addTask { [weak self] in
                         guard let self else { return }
-                        switch mediaTrack {
-                        case let .audio(output, input):
-                            let progress = Progress(totalUnitCount: Int64(duration.seconds))
-                            self.progress.addChild(progress, withPendingUnitCount: 1)
-                            try await Self.processAudioSamples(from: output, to: input, progress: progress)
-                        case let .video(output, input, inputSize, pixelFormat, adaptor):
-                            let progress = Progress(totalUnitCount: Int64(duration.seconds))
-                            self.progress.addChild(progress, withPendingUnitCount: 10)
-                            try await Self.processVideoSamples(
-                                from: output,
-                                to: input,
-                                adaptor: adaptor,
-                                inputSize: inputSize,
-                                outputSize: outputSize,
-                                pixelFormat: pixelFormat,
-                                progress: progress
-                            )
-                        case let .spatialVideo(output, input, inputSize, pixelFormat, adaptor):
-                            if #available(macOS 14.0, iOS 17.0, *) {
-                                let progress = Progress(totalUnitCount: Int64(duration.seconds))
-                                self.progress.addChild(progress, withPendingUnitCount: 10)
-                                try await Self.processSpatialVideoSamples(
-                                    from: output,
-                                    to: input,
-                                    adaptor: adaptor as! AVAssetWriterInputTaggedPixelBufferGroupAdaptor,
-                                    inputSize: inputSize,
-                                    outputSize: outputSize,
-                                    pixelFormat: pixelFormat,
-                                    progress: progress
-                                )
-                            }
-                        }
+                        let progress = Progress(totalUnitCount: Int64(duration.seconds))
+                        self.progress.addChild(progress, withPendingUnitCount: mediaTrack.pendingUnitCount)
+                        try await mediaTrack.process(progress)
                     }
                 }
                 try await group.waitForAll()
@@ -239,26 +269,16 @@ public class UpscalingExportSession {
 
     // MARK: Private
 
-    private enum MediaTrack {
-        case audio(
-            _ output: AVAssetReaderOutput,
-            _ input: AVAssetWriterInput
-        )
-        case video(
-            _ output: AVAssetReaderOutput,
-            _ input: AVAssetWriterInput,
-            _ inputSize: CGSize,
-            _ pixelFormat: OSType,
-            _ adaptor: AVAssetWriterInputPixelBufferAdaptor
-        )
-        case spatialVideo(
-            _ output: AVAssetReaderOutput,
-            _ input: AVAssetWriterInput,
-            _ inputSize: CGSize,
-            _ pixelFormat: OSType,
-            _ adaptor: NSObject
-        )
+    /// A single track's export work, ready to run against a child `Progress`.
+    /// Storing a prebuilt closure (rather than the reader/writer/adaptor) keeps
+    /// availability-gated types (e.g. the spatial adaptor) out of this type and
+    /// lets the task group treat every track uniformly.
+    private struct MediaTrackTask {
+        let pendingUnitCount: Int64
+        let process: (_ progress: Progress) async throws -> Void
     }
+
+    private static let maxFramesInFlight = 3
 
     private static func encoder(
         _ codec: AVVideoCodecType,
@@ -282,8 +302,7 @@ public class UpscalingExportSession {
 
     /// Whether the export should produce an MV-HEVC (spatial) video: the source
     /// must contain left and right eye layers and the output codec must support MV-HEVC.
-    @available(macOS 14.0, iOS 17.0, *)
-    private static func shouldExportSpatialVideo(
+    @available(macOS 14.0, iOS 17.0, *) private static func shouldExportSpatialVideo(
         formatDescription: CMFormatDescription?,
         outputCodec: AVVideoCodecType?
     ) -> Bool {
@@ -416,50 +435,42 @@ public class UpscalingExportSession {
         }
     }
 
-    private static func processAudioSamples(
-        from assetReaderOutput: AVAssetReaderOutput,
-        to assetWriterInput: AVAssetWriterInput,
+    private static func copyAudioSamples(
+        from output: AVAssetReaderOutput,
+        to input: AVAssetWriterInput,
         progress: Progress
     ) async throws {
-        try await withCheckedThrowingContinuation { continuation in
-            let queue = DispatchQueue(
-                label: "\(String(describing: Self.self)).audio.\(UUID().uuidString)",
-                qos: .userInitiated
-            )
-            assetWriterInput.requestMediaDataWhenReady(on: queue) {
-                while assetWriterInput.isReadyForMoreMediaData {
-                    if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
-                        if nextSampleBuffer.presentationTimeStamp.isNumeric {
-                            let timestamp = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
-                            DispatchQueue.main.async {
-                                progress.completedUnitCount = timestamp
-                            }
-                        }
-                        guard assetWriterInput.append(nextSampleBuffer) else {
-                            assetWriterInput.markAsFinished()
-                            continuation.resume()
-                            return
-                        }
-                    } else {
-                        assetWriterInput.markAsFinished()
-                        continuation.resume()
-                        return
-                    }
-                }
+        try await input.appendSamples(label: "\(String(describing: Self.self)).audio") {
+            guard let sampleBuffer = output.copyNextSampleBuffer() else { return false }
+            if sampleBuffer.presentationTimeStamp.isNumeric {
+                let timestamp = Int64(sampleBuffer.presentationTimeStamp.seconds)
+                DispatchQueue.main.async { progress.completedUnitCount = timestamp }
             }
-        } as Void
+            return input.append(sampleBuffer)
+        }
     }
 
-    private static let maxFramesInFlight = 3
-
-    private static func processVideoSamples(
-        from assetReaderOutput: AVAssetReaderOutput,
-        to assetWriterInput: AVAssetWriterInput,
-        adaptor: AVAssetWriterInputPixelBufferAdaptor,
+    /// Reads frames from `output`, upscales them off the reader thread with at
+    /// most `maxFramesInFlight` outstanding, and appends the results to `input`
+    /// in presentation order. The small differences between plain and spatial
+    /// video live in the injected closures:
+    ///
+    /// - `decode` extracts the input pixel buffer(s) for one frame.
+    /// - `submitUpscale` submits GPU work (synchronously, in order, on the
+    ///   reader thread) and calls its completion with the upscaled frame.
+    /// - `append` writes one upscaled frame, returning `false` if the writer
+    ///   rejected it.
+    private static func processVideoSamples<Frame>(
+        from output: AVAssetReaderOutput,
+        to input: AVAssetWriterInput,
         inputSize: CGSize,
         outputSize: CGSize,
         pixelFormat: OSType,
-        progress: Progress
+        progress: Progress,
+        label: String,
+        decode: @escaping (CMSampleBuffer) throws -> Frame,
+        submitUpscale: @escaping (Upscaler, Frame, @escaping (Frame) -> Void) -> Void,
+        append: @escaping (Frame, CMTime) -> Bool
     ) async throws {
         guard let upscaler = Upscaler(
             inputSize: inputSize,
@@ -469,174 +480,106 @@ public class UpscalingExportSession {
             throw Error.failedToCreateUpscaler
         }
 
-        let channel = FrameChannel<CVPixelBuffer>(capacity: maxFramesInFlight)
+        let channel = FrameChannel<Frame>(capacity: maxFramesInFlight)
 
-        DispatchQueue(
-            label: "\(String(describing: Self.self)).video.read.\(UUID().uuidString)",
-            qos: .userInitiated
-        ).async {
-            while let sampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
-                guard let imageBuffer = sampleBuffer.imageBuffer else {
-                    channel.finish(throwing: Error.missingImageBuffer)
+        // Decode and submit GPU work in presentation order on a dedicated thread.
+        // `enqueue` blocks once `maxFramesInFlight` frames are outstanding, which
+        // bounds memory and keeps decode, upscaling, and encoding overlapping.
+        DispatchQueue(label: "\(label).read", qos: .userInitiated).async {
+            while let sampleBuffer = output.copyNextSampleBuffer() {
+                do {
+                    let inputFrame = try decode(sampleBuffer)
+                    let frame = FrameChannel<Frame>.PendingFrame(time: sampleBuffer.presentationTimeStamp)
+                    guard channel.enqueue(frame) else { return }
+                    submitUpscale(upscaler, inputFrame) { frame.fulfill($0) }
+                } catch {
+                    channel.finish(throwing: error)
                     return
-                }
-                let frame = FrameChannel<CVPixelBuffer>.PendingFrame(
-                    time: sampleBuffer.presentationTimeStamp
-                )
-                guard channel.enqueue(frame) else { return }
-                upscaler.upscale(imageBuffer, pixelBufferPool: adaptor.pixelBufferPool) { upscaled in
-                    frame.fulfill(upscaled)
                 }
             }
             channel.finish()
         }
 
-        try await withCheckedThrowingContinuation { continuation in
-            let queue = DispatchQueue(
-                label: "\(String(describing: Self.self)).video.write.\(UUID().uuidString)",
-                qos: .userInitiated
-            )
-            assetWriterInput.requestMediaDataWhenReady(on: queue) {
-                while assetWriterInput.isReadyForMoreMediaData {
-                    guard let frame = channel.dequeue() else {
-                        assetWriterInput.markAsFinished()
-                        if let error = channel.terminationError {
-                            continuation.resume(throwing: error)
-                        } else {
-                            continuation.resume()
-                        }
-                        return
-                    }
-                    let upscaledImageBuffer = frame.wait()
-                    if frame.time.isNumeric {
-                        let timestamp = Int64(frame.time.seconds)
-                        DispatchQueue.main.async { progress.completedUnitCount = timestamp }
-                    }
-                    guard adaptor.append(
-                        upscaledImageBuffer,
-                        withPresentationTime: frame.time
-                    ) else {
-                        assetWriterInput.markAsFinished()
-                        channel.abort()
-                        continuation.resume()
-                        return
-                    }
+        // Append upscaled frames in order, waiting on each frame's GPU completion.
+        try await input.appendSamples(label: "\(label).write") {
+            guard let frame = channel.dequeue() else {
+                if let error = channel.terminationError {
+                    throw error
                 }
+                return false
             }
-        } as Void
+            let upscaledFrame = frame.wait()
+            if frame.time.isNumeric {
+                let timestamp = Int64(frame.time.seconds)
+                DispatchQueue.main.async { progress.completedUnitCount = timestamp }
+            }
+            guard append(upscaledFrame, frame.time) else {
+                channel.abort()
+                return false
+            }
+            return true
+        }
     }
 
-    @available(macOS 14.0, iOS 17.0, *) private static func processSpatialVideoSamples(
-        from assetReaderOutput: AVAssetReaderOutput,
-        to assetWriterInput: AVAssetWriterInput,
-        adaptor: AVAssetWriterInputTaggedPixelBufferGroupAdaptor,
-        inputSize: CGSize,
-        outputSize: CGSize,
-        pixelFormat: OSType,
-        progress: Progress
-    ) async throws {
-        guard let upscaler = Upscaler(
-            inputSize: inputSize,
-            outputSize: outputSize,
-            pixelFormat: pixelFormat
-        ) else {
-            throw Error.failedToCreateUpscaler
+    /// Extracts the left- and right-eye pixel buffers from a stereoscopic
+    /// (MV-HEVC) sample buffer.
+    @available(macOS 14.0, iOS 17.0, *) private static func stereoscopicPixelBuffers(
+        from sampleBuffer: CMSampleBuffer
+    ) throws -> (left: CVPixelBuffer, right: CVPixelBuffer) {
+        guard let taggedBuffers = sampleBuffer.taggedBuffers else {
+            throw Error.missingTaggedBuffers
         }
-
-        let channel = FrameChannel<(CVPixelBuffer, CVPixelBuffer)>(capacity: maxFramesInFlight)
-
-        let readerQueue = DispatchQueue(
-            label: "\(String(describing: Self.self)).spatialvideo.read.\(UUID().uuidString)",
-            qos: .userInitiated
-        )
-        readerQueue.async {
-            while let sampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
-                guard let taggedBuffers = sampleBuffer.taggedBuffers else {
-                    channel.finish(throwing: Error.missingTaggedBuffers)
-                    return
-                }
-                let leftEyeBuffer = taggedBuffers.first(where: {
-                    $0.tags.first(matchingCategory: .stereoView) == .stereoView(.leftEye)
-                })?.buffer
-                let rightEyeBuffer = taggedBuffers.first(where: {
-                    $0.tags.first(matchingCategory: .stereoView) == .stereoView(.rightEye)
-                })?.buffer
-                guard let leftEyeBuffer,
-                      let rightEyeBuffer,
-                      case let .pixelBuffer(leftEyePixelBuffer) = leftEyeBuffer,
-                      case let .pixelBuffer(rightEyePixelBuffer) = rightEyeBuffer else {
-                    channel.finish(throwing: Error.invalidTaggedBuffers)
-                    return
-                }
-                let frame = FrameChannel<(CVPixelBuffer, CVPixelBuffer)>.PendingFrame(
-                    time: sampleBuffer.presentationTimeStamp
-                )
-                guard channel.enqueue(frame) else { return }
-                let group = DispatchGroup()
-                var upscaledLeft: CVPixelBuffer?
-                var upscaledRight: CVPixelBuffer?
-                group.enter()
-                upscaler.upscale(leftEyePixelBuffer, pixelBufferPool: adaptor.pixelBufferPool) {
-                    upscaledLeft = $0
-                    group.leave()
-                }
-                group.enter()
-                upscaler.upscale(rightEyePixelBuffer, pixelBufferPool: adaptor.pixelBufferPool) {
-                    upscaledRight = $0
-                    group.leave()
-                }
-                group.notify(queue: .global(qos: .userInitiated)) {
-                    frame.fulfill((upscaledLeft!, upscaledRight!))
-                }
-            }
-            channel.finish()
+        let leftBuffer = taggedBuffers.first {
+            $0.tags.first(matchingCategory: .stereoView) == .stereoView(.leftEye)
+        }?.buffer
+        let rightBuffer = taggedBuffers.first {
+            $0.tags.first(matchingCategory: .stereoView) == .stereoView(.rightEye)
+        }?.buffer
+        guard let leftBuffer, let rightBuffer,
+              case let .pixelBuffer(leftPixelBuffer) = leftBuffer,
+              case let .pixelBuffer(rightPixelBuffer) = rightBuffer else {
+            throw Error.invalidTaggedBuffers
         }
-
-        try await withCheckedThrowingContinuation { continuation in
-            let queue = DispatchQueue(
-                label: "\(String(describing: Self.self)).spatialvideo.write.\(UUID().uuidString)",
-                qos: .userInitiated
-            )
-            assetWriterInput.requestMediaDataWhenReady(on: queue) {
-                while assetWriterInput.isReadyForMoreMediaData {
-                    guard let frame = channel.dequeue() else {
-                        assetWriterInput.markAsFinished()
-                        if let error = channel.terminationError {
-                            continuation.resume(throwing: error)
-                        } else {
-                            continuation.resume()
-                        }
-                        return
-                    }
-                    let (upscaledLeftEyePixelBuffer, upscaledRightEyePixelBuffer) = frame.wait()
-                    if frame.time.isNumeric {
-                        let timestamp = Int64(frame.time.seconds)
-                        DispatchQueue.main.async { progress.completedUnitCount = timestamp }
-                    }
-                    let leftEyeTaggedBuffer = CMTaggedBuffer(
-                        tags: [.stereoView(.leftEye), .videoLayerID(0)],
-                        pixelBuffer: upscaledLeftEyePixelBuffer
-                    )
-                    let rightEyeTaggedBuffer = CMTaggedBuffer(
-                        tags: [.stereoView(.rightEye), .videoLayerID(1)],
-                        pixelBuffer: upscaledRightEyePixelBuffer
-                    )
-                    guard adaptor.appendTaggedBuffers(
-                        [leftEyeTaggedBuffer, rightEyeTaggedBuffer],
-                        withPresentationTime: frame.time
-                    ) else {
-                        assetWriterInput.markAsFinished()
-                        channel.abort()
-                        continuation.resume()
-                        return
-                    }
-                }
-            }
-        } as Void
+        return (leftPixelBuffer, rightPixelBuffer)
     }
 }
 
-// MARK: UpscalingExportSession.Error
+// MARK: - AVAssetWriterInput + async sample appending
+
+private extension AVAssetWriterInput {
+    /// Bridges the pull-based `requestMediaDataWhenReady(on:)` callback to
+    /// async/await.
+    ///
+    /// `appendNextSample` is invoked repeatedly on a private serial queue while
+    /// the input is ready for more data. It should append the next sample and
+    /// return `true`, or return `false` once the source is exhausted or the
+    /// writer stops accepting samples. Throwing propagates out of `await`. In
+    /// every terminating case the input is marked as finished.
+    func appendSamples(
+        label: String,
+        _ appendNextSample: @escaping () throws -> Bool
+    ) async throws {
+        let queue = DispatchQueue(label: label, qos: .userInitiated)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Swift.Error>) in
+            requestMediaDataWhenReady(on: queue) {
+                do {
+                    while self.isReadyForMoreMediaData {
+                        guard try appendNextSample() else {
+                            self.markAsFinished()
+                            continuation.resume()
+                            return
+                        }
+                    }
+                } catch {
+                    self.markAsFinished()
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - UpscalingExportSession.Error
 
 public extension UpscalingExportSession {
     enum Error: Swift.Error {
