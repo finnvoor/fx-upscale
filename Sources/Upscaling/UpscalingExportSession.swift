@@ -521,7 +521,7 @@ public class UpscalingExportSession {
                     upscaledRight = $0
                     group.leave()
                 }
-                group.notify(queue: readerQueue) {
+                group.notify(queue: .global(qos: .userInitiated)) {
                     frame.fulfill((upscaledLeft!, upscaledRight!))
                 }
             }
