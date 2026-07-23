@@ -1,4 +1,5 @@
 import AVFoundation
+import VideoToolbox
 
 public extension CMFormatDescription {
     var videoCodecType: AVVideoCodecType? {
@@ -61,6 +62,29 @@ public extension CMFormatDescription {
         case kCMFormatDescriptionYCbCrMatrix_ITU_R_2020: AVVideoYCbCrMatrix_ITU_R_2020
         default: nil
         }
+    }
+
+    var isHDR: Bool {
+        switch extensions[
+            kCMFormatDescriptionExtension_TransferFunction
+        ].map({ $0 as! CFString }) {
+        case kCMFormatDescriptionTransferFunction_SMPTE_ST_2084_PQ,
+             kCMFormatDescriptionTransferFunction_ITU_R_2100_HLG:
+            return true
+        default:
+            return false
+        }
+    }
+
+    var hdrMetadata: [CFString: Any] {
+        var metadata: [CFString: Any] = [:]
+        if let value = extensions[kCMFormatDescriptionExtension_MasteringDisplayColorVolume] {
+            metadata[kVTCompressionPropertyKey_MasteringDisplayColorVolume] = value
+        }
+        if let value = extensions[kCMFormatDescriptionExtension_ContentLightLevelInfo] {
+            metadata[kVTCompressionPropertyKey_ContentLightLevelInfo] = value
+        }
+        return metadata
     }
 
     @available(macOS 14.0, iOS 17.0, *) var hasLeftAndRightEye: Bool {
