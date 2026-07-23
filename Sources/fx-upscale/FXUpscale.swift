@@ -58,8 +58,14 @@ import Upscaling
         default: .hevc
         }
 
+        // Spatial (MV-HEVC) video can only be encoded with HEVC, so never force ProRes for it.
+        var isSpatialVideo = false
+        if #available(macOS 14.0, iOS 17.0, *) {
+            isSpatialVideo = formatDescription?.hasLeftAndRightEye ?? false
+        }
+
         // Through anecdotal tests anything beyond 14.5K fails to encode for anything other than ProRes
-        let convertToProRes = (outputSize.width * outputSize.height) > (14500 * 8156)
+        let convertToProRes = !isSpatialVideo && (outputSize.width * outputSize.height) > (14500 * 8156)
 
         if convertToProRes {
             CommandLine.info("Forced ProRes conversion due to output size being larger than 14.5K (will fail otherwise)")
