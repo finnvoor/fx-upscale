@@ -240,6 +240,26 @@ public class UpscalingExportSession {
         )
     }
 
+    private static func encoder(
+        _ codec: AVVideoCodecType,
+        supportsProperty property: CFString,
+        outputSize: CGSize
+    ) -> Bool {
+        guard let codecType = codec.cmVideoCodecType else { return false }
+        var supportedProperties: CFDictionary?
+        let status = VTCopySupportedPropertyDictionaryForEncoder(
+            width: Int32(outputSize.width),
+            height: Int32(outputSize.height),
+            codecType: codecType,
+            encoderSpecification: nil,
+            encoderIDOut: nil,
+            supportedPropertiesOut: &supportedProperties
+        )
+        guard status == noErr,
+              let supportedProperties = supportedProperties as? [String: Any] else { return false }
+        return supportedProperties[property as String] != nil
+    }
+
     private static func assetReaderOutput(
         for track: AVAssetTrack,
         formatDescription: CMFormatDescription?
@@ -277,10 +297,11 @@ public class UpscalingExportSession {
     ) async throws -> AVAssetWriterInput? {
         switch track.mediaType {
         case .video:
+            let codec = outputCodec ?? formatDescription?.videoCodecType ?? .hevc
             var outputSettings: [String: Any] = [
                 AVVideoWidthKey: outputSize.width,
                 AVVideoHeightKey: outputSize.height,
-                AVVideoCodecKey: outputCodec ?? formatDescription?.videoCodecType ?? .hevc
+                AVVideoCodecKey: codec
             ]
             if let colorPrimaries = formatDescription?.colorPrimaries,
                let colorTransferFunction = formatDescription?.colorTransferFunction,
@@ -291,9 +312,18 @@ public class UpscalingExportSession {
                     AVVideoYCbCrMatrixKey: colorYCbCrMatrix
                 ]
             }
+            var compressionProperties: [CFString: Any] = [:]
+            // Speed up the encoder where supported; querying at runtime avoids
+            // setting it where it would throw (ProRes, H.264 above ~4K, etc).
+            if Self.encoder(
+                codec,
+                supportsProperty: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
+                outputSize: outputSize
+            ) {
+                compressionProperties[kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality] = true
+            }
             if #available(macOS 14.0, iOS 17.0, *),
                formatDescription?.hasLeftAndRightEye ?? false {
-                var compressionProperties: [CFString: Any] = [:]
                 compressionProperties[kVTCompressionPropertyKey_MVHEVCVideoLayerIDs] = [0, 1]
                 if let extensions = formatDescription?.extensions {
                     for key in [
@@ -309,6 +339,8 @@ public class UpscalingExportSession {
                         }
                     }
                 }
+            }
+            if !compressionProperties.isEmpty {
                 outputSettings[AVVideoCompressionPropertiesKey] = compressionProperties
             }
             let assetWriterInput = AVAssetWriterInput(
@@ -364,6 +396,8 @@ public class UpscalingExportSession {
         } as Void
     }
 
+    private static let maxFramesInFlight = 3
+
     private static func processVideoSamples(
         from assetReaderOutput: AVAssetReaderOutput,
         to assetWriterInput: AVAssetWriterInput,
@@ -375,40 +409,56 @@ public class UpscalingExportSession {
         guard let upscaler = Upscaler(inputSize: inputSize, outputSize: outputSize) else {
             throw Error.failedToCreateUpscaler
         }
+
+        let channel = FrameChannel<CVPixelBuffer>(capacity: maxFramesInFlight)
+
+        DispatchQueue(
+            label: "\(String(describing: Self.self)).video.read.\(UUID().uuidString)",
+            qos: .userInitiated
+        ).async {
+            while let sampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
+                guard let imageBuffer = sampleBuffer.imageBuffer else {
+                    channel.finish(throwing: Error.missingImageBuffer)
+                    return
+                }
+                let frame = FrameChannel<CVPixelBuffer>.PendingFrame(
+                    time: sampleBuffer.presentationTimeStamp
+                )
+                guard channel.enqueue(frame) else { return }
+                upscaler.upscale(imageBuffer, pixelBufferPool: adaptor.pixelBufferPool) { upscaled in
+                    frame.fulfill(upscaled)
+                }
+            }
+            channel.finish()
+        }
+
         try await withCheckedThrowingContinuation { continuation in
             let queue = DispatchQueue(
-                label: "\(String(describing: Self.self)).video.\(UUID().uuidString)",
+                label: "\(String(describing: Self.self)).video.write.\(UUID().uuidString)",
                 qos: .userInitiated
             )
             assetWriterInput.requestMediaDataWhenReady(on: queue) {
                 while assetWriterInput.isReadyForMoreMediaData {
-                    if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
-                        if nextSampleBuffer.presentationTimeStamp.isNumeric {
-                            let timestamp = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
-                            DispatchQueue.main.async {
-                                progress.completedUnitCount = timestamp
-                            }
-                        }
-                        if let imageBuffer = nextSampleBuffer.imageBuffer {
-                            let upscaledImageBuffer = upscaler.upscale(
-                                imageBuffer,
-                                pixelBufferPool: adaptor.pixelBufferPool
-                            )
-                            guard adaptor.append(
-                                upscaledImageBuffer,
-                                withPresentationTime: nextSampleBuffer.presentationTimeStamp
-                            ) else {
-                                assetWriterInput.markAsFinished()
-                                continuation.resume()
-                                return
-                            }
-                        } else {
-                            assetWriterInput.markAsFinished()
-                            continuation.resume(throwing: Error.missingImageBuffer)
-                            return
-                        }
-                    } else {
+                    guard let frame = channel.dequeue() else {
                         assetWriterInput.markAsFinished()
+                        if let error = channel.terminationError {
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume()
+                        }
+                        return
+                    }
+                    let upscaledImageBuffer = frame.wait()
+                    if frame.time.isNumeric {
+                        let timestamp = Int64(frame.time.seconds)
+                        DispatchQueue.main.async { progress.completedUnitCount = timestamp }
+                    }
+                    guard adaptor.append(
+                        upscaledImageBuffer,
+                        withPresentationTime: frame.time
+                    ) else {
+                        assetWriterInput.markAsFinished()
+                        channel.abort()
                         continuation.resume()
                         return
                     }
@@ -428,66 +478,91 @@ public class UpscalingExportSession {
         guard let upscaler = Upscaler(inputSize: inputSize, outputSize: outputSize) else {
             throw Error.failedToCreateUpscaler
         }
+
+        let channel = FrameChannel<(CVPixelBuffer, CVPixelBuffer)>(capacity: maxFramesInFlight)
+
+        let readerQueue = DispatchQueue(
+            label: "\(String(describing: Self.self)).spatialvideo.read.\(UUID().uuidString)",
+            qos: .userInitiated
+        )
+        readerQueue.async {
+            while let sampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
+                guard let taggedBuffers = sampleBuffer.taggedBuffers else {
+                    channel.finish(throwing: Error.missingTaggedBuffers)
+                    return
+                }
+                let leftEyeBuffer = taggedBuffers.first(where: {
+                    $0.tags.first(matchingCategory: .stereoView) == .stereoView(.leftEye)
+                })?.buffer
+                let rightEyeBuffer = taggedBuffers.first(where: {
+                    $0.tags.first(matchingCategory: .stereoView) == .stereoView(.rightEye)
+                })?.buffer
+                guard let leftEyeBuffer,
+                      let rightEyeBuffer,
+                      case let .pixelBuffer(leftEyePixelBuffer) = leftEyeBuffer,
+                      case let .pixelBuffer(rightEyePixelBuffer) = rightEyeBuffer else {
+                    channel.finish(throwing: Error.invalidTaggedBuffers)
+                    return
+                }
+                let frame = FrameChannel<(CVPixelBuffer, CVPixelBuffer)>.PendingFrame(
+                    time: sampleBuffer.presentationTimeStamp
+                )
+                guard channel.enqueue(frame) else { return }
+                let group = DispatchGroup()
+                var upscaledLeft: CVPixelBuffer?
+                var upscaledRight: CVPixelBuffer?
+                group.enter()
+                upscaler.upscale(leftEyePixelBuffer, pixelBufferPool: adaptor.pixelBufferPool) {
+                    upscaledLeft = $0
+                    group.leave()
+                }
+                group.enter()
+                upscaler.upscale(rightEyePixelBuffer, pixelBufferPool: adaptor.pixelBufferPool) {
+                    upscaledRight = $0
+                    group.leave()
+                }
+                group.notify(queue: readerQueue) {
+                    frame.fulfill((upscaledLeft!, upscaledRight!))
+                }
+            }
+            channel.finish()
+        }
+
         try await withCheckedThrowingContinuation { continuation in
             let queue = DispatchQueue(
-                label: "\(String(describing: Self.self)).spatialvideo.\(UUID().uuidString)",
+                label: "\(String(describing: Self.self)).spatialvideo.write.\(UUID().uuidString)",
                 qos: .userInitiated
             )
             assetWriterInput.requestMediaDataWhenReady(on: queue) {
                 while assetWriterInput.isReadyForMoreMediaData {
-                    if let nextSampleBuffer = assetReaderOutput.copyNextSampleBuffer() {
-                        if nextSampleBuffer.presentationTimeStamp.isNumeric {
-                            let timestamp = Int64(nextSampleBuffer.presentationTimeStamp.seconds)
-                            DispatchQueue.main.async {
-                                progress.completedUnitCount = timestamp
-                            }
-                        }
-                        if let taggedBuffers = nextSampleBuffer.taggedBuffers {
-                            let leftEyeBuffer = taggedBuffers.first(where: {
-                                $0.tags.first(matchingCategory: .stereoView) == .stereoView(.leftEye)
-                            })?.buffer
-                            let rightEyeBuffer = taggedBuffers.first(where: {
-                                $0.tags.first(matchingCategory: .stereoView) == .stereoView(.rightEye)
-                            })?.buffer
-                            guard let leftEyeBuffer,
-                                  let rightEyeBuffer,
-                                  case let .pixelBuffer(leftEyePixelBuffer) = leftEyeBuffer,
-                                  case let .pixelBuffer(rightEyePixelBuffer) = rightEyeBuffer else {
-                                assetWriterInput.markAsFinished()
-                                continuation.resume(throwing: Error.invalidTaggedBuffers)
-                                return
-                            }
-                            let upscaledLeftEyePixelBuffer = upscaler.upscale(
-                                leftEyePixelBuffer,
-                                pixelBufferPool: adaptor.pixelBufferPool
-                            )
-                            let upscaledRightEyePixelBuffer = upscaler.upscale(
-                                rightEyePixelBuffer,
-                                pixelBufferPool: adaptor.pixelBufferPool
-                            )
-                            let leftEyeTaggedBuffer = CMTaggedBuffer(
-                                tags: [.stereoView(.leftEye), .videoLayerID(0)],
-                                pixelBuffer: upscaledLeftEyePixelBuffer
-                            )
-                            let rightEyeTaggedBuffer = CMTaggedBuffer(
-                                tags: [.stereoView(.rightEye), .videoLayerID(1)],
-                                pixelBuffer: upscaledRightEyePixelBuffer
-                            )
-                            guard adaptor.appendTaggedBuffers(
-                                [leftEyeTaggedBuffer, rightEyeTaggedBuffer],
-                                withPresentationTime: nextSampleBuffer.presentationTimeStamp
-                            ) else {
-                                assetWriterInput.markAsFinished()
-                                continuation.resume()
-                                return
-                            }
-                        } else {
-                            assetWriterInput.markAsFinished()
-                            continuation.resume(throwing: Error.missingTaggedBuffers)
-                            return
-                        }
-                    } else {
+                    guard let frame = channel.dequeue() else {
                         assetWriterInput.markAsFinished()
+                        if let error = channel.terminationError {
+                            continuation.resume(throwing: error)
+                        } else {
+                            continuation.resume()
+                        }
+                        return
+                    }
+                    let (upscaledLeftEyePixelBuffer, upscaledRightEyePixelBuffer) = frame.wait()
+                    if frame.time.isNumeric {
+                        let timestamp = Int64(frame.time.seconds)
+                        DispatchQueue.main.async { progress.completedUnitCount = timestamp }
+                    }
+                    let leftEyeTaggedBuffer = CMTaggedBuffer(
+                        tags: [.stereoView(.leftEye), .videoLayerID(0)],
+                        pixelBuffer: upscaledLeftEyePixelBuffer
+                    )
+                    let rightEyeTaggedBuffer = CMTaggedBuffer(
+                        tags: [.stereoView(.rightEye), .videoLayerID(1)],
+                        pixelBuffer: upscaledRightEyePixelBuffer
+                    )
+                    guard adaptor.appendTaggedBuffers(
+                        [leftEyeTaggedBuffer, rightEyeTaggedBuffer],
+                        withPresentationTime: frame.time
+                    ) else {
+                        assetWriterInput.markAsFinished()
+                        channel.abort()
                         continuation.resume()
                         return
                     }
